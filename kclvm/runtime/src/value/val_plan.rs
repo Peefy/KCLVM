@@ -175,6 +175,21 @@ impl ValueRef {
         results.join("---\n")
     }
 
+    /// Plan the value to JSON and YAML strings
+    pub fn plan(&self) -> (String, String) {
+        let results = filter_results(self);
+        let yaml_result = results
+            .iter()
+            .map(|r| r.to_yaml_string())
+            .collect::<Vec<String>>().join("---\n");
+        let mut list_result = ValueRef::list(None);
+        for r in results {
+            list_result.list_append(&r);
+        }
+        let json_result = list_result.to_json_string();
+        (json_result, yaml_result)
+    }
+
     fn filter_results(&self) -> ValueRef {
         let ctx = Context::current_context();
         match &*self.rc {
