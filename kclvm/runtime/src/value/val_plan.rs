@@ -181,7 +181,8 @@ impl ValueRef {
         let yaml_result = results
             .iter()
             .map(|r| r.to_yaml_string())
-            .collect::<Vec<String>>().join("---\n");
+            .collect::<Vec<String>>()
+            .join("---\n");
         let mut list_result = ValueRef::list(None);
         for r in results {
             list_result.list_append(&r);
