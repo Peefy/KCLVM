@@ -11,7 +11,7 @@ use kclvm_config::settings::{load_file, merge_settings, SettingsFile};
 use kclvm_parser::load_program;
 use kclvm_runner::{execute, ExecProgramArgs};
 
-fn main() {
+fn _main() {
     let matches = clap_app!(kcl =>
         (@subcommand run =>
             (@arg INPUT: ... "Sets the input file to use")
@@ -62,6 +62,14 @@ fn main() {
         }
     } else {
         println!("{}", matches.usage());
+    }
+}
+
+fn main() {
+    for _ in 0..200000000 {
+        let mut program = load_program(&["../samples/hello.k"], None).unwrap(); // Resolve ast
+        let result = execute(program, 1, &ExecProgramArgs::default());
+        println!("{:?}", result);
     }
 }
 
