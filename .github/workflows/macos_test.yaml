@@ -1,0 +1,53 @@
+name: build-and-test-macos
+on: ["push", "pull_request"]
+jobs:
+  build-and-test:
+    # Ref: https://github.com/actions/virtual-environments/blob/main/images/macos/macos-11-Readme.md
+    runs-on: macos-11
+    steps:
+      - name: Git checkout
+        uses: actions/checkout@v2
+        with:
+         submodules: 'true'
+
+      - run: clang --version
+      - run: cargo --version
+      - run: rustc --print sysroot
+
+      - name: Build KCLVM
+        run: make build
+        shell: bash
+      - name: Grammar test
+        run: |
+          brew install coreutils
+          chmod +x ./internal/kclvm_py/scripts/test_grammar.sh
+          ./internal/kclvm_py/scripts/test_grammar.sh
+        shell: bash
+      - name: Delete rust cargo
+        run: rm -rf /root/.cargo/bin
+        shell: bash
+      - name: Install LLVM 12
+        run: brew install llvm@12
+        shell: bash
+      - name: Install rust nightly toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.61
+          override: true
+          components: clippy, rustfmt
+      - name: Rust code format check
+        working-directory: ./kclvm
+        run: cargo fmt --check
+        shell: bash
+      - name: Rust grammar test
+        working-directory: ./kclvm
+        run: export PATH=$PATH:$PWD/../_build/dist/Darwin/kclvm/bin:/usr/local/opt/llvm@12/bin && make install-rustc-wasm && make && make test-grammar
+        shell: bash
+      - name: Rust runtime test
+        working-directory: ./kclvm
+        run: export PATH=$PATH:$PWD/../_build/dist/Darwin/kclvm/bin:/usr/local/opt/llvm@12/bin && make install-rustc-wasm && make && make test-runtime
+        shell: bash
+      - name: Rust unit test
+        working-directory: ./kclvm
+        run: export PATH=$PATH:$PWD/../_build/dist/Darwin/kclvm/bin:/usr/local/opt/llvm@12/bin && make install-rustc-wasm && make && make codecov-lcov
+        shell: bash

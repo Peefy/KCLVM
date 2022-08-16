@@ -108,6 +108,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                 end,
                 ty: ty.clone(),
                 kind: ScopeObjectKind::TypeAlias,
+                used: false,
             },
         );
         ty
@@ -246,6 +247,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                         end,
                         ty: self.any_ty(),
                         kind: ScopeObjectKind::Variable,
+                        used: false,
                     },
                 );
             }
@@ -292,6 +294,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                 end,
                 ty: expected_ty.clone(),
                 kind: ScopeObjectKind::Variable,
+                used: false,
             },
         );
         if let Some(value) = &schema_attr.value {
@@ -542,11 +545,13 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
             Some(last) => last.get_end_pos(),
             None => dict_comp.entry.value.get_end_pos(),
         };
-        self.enter_scope(start, end, ScopeKind::Loop);
+        self.enter_scope(start.clone(), end, ScopeKind::Loop);
         for comp_clause in &dict_comp.generators {
             self.walk_comp_clause(&comp_clause.node);
         }
         let key_ty = self.expr(key);
+        // TODO: Naming both dict keys and schema attributes as `attribute`
+        self.check_attr_ty(&key_ty, start);
         let val_ty = self.expr(&dict_comp.entry.value);
         self.leave_scope();
         Type::dict_ref(key_ty, val_ty)
@@ -696,6 +701,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                     end,
                     ty: self.any_ty(),
                     kind: ScopeObjectKind::Variable,
+                    used: false,
                 },
             );
         }
@@ -950,6 +956,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                     end: end.clone(),
                     ty: param.ty.clone(),
                     kind: ScopeObjectKind::Parameter,
+                    used: false,
                 },
             )
         }

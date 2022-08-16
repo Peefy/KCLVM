@@ -79,3 +79,82 @@ fn test_resolve_program_fail() {
     assert_eq!(diag.messages.len(), 1);
     assert_eq!(diag.messages[0].message, "expect int, got {str:int(1)}");
 }
+
+#[test]
+fn test_resolve_program_cycle_reference_fail() {
+    let mut program = load_program(
+        &["./src/resolver/test_fail_data/cycle_reference/file1.k"],
+        None,
+    )
+    .unwrap();
+    let scope = resolve_program(&mut program);
+    let err_messages = [
+        "There is a circular import reference between module file1 and file2",
+        "There is a circular reference between schema SchemaBase and SchemaSub",
+        "There is a circular reference between schema SchemaSub and SchemaBase",
+        "There is a circular reference between rule RuleBase and RuleSub",
+        "There is a circular reference between rule RuleSub and RuleBase",
+    ];
+    assert_eq!(scope.diagnostics.len(), err_messages.len());
+    for (diag, msg) in scope.diagnostics.iter().zip(err_messages.iter()) {
+        assert_eq!(diag.messages[0].message, msg.to_string(),);
+    }
+}
+
+#[test]
+fn test_record_used_module() {
+    let mut program =
+        load_program(&["./src/resolver/test_data/record_used_module.k"], None).unwrap();
+    let scope = resolve_program(&mut program);
+    let main_scope = scope
+        .scope_map
+        .get(kclvm::MAIN_PKG_PATH)
+        .unwrap()
+        .borrow_mut()
+        .clone();
+    for (_, obj) in main_scope.elems {
+        let obj = obj.borrow_mut().clone();
+        if obj.kind == ScopeObjectKind::Module {
+            if obj.name == "math" {
+                assert_eq!(obj.used, false);
+            } else {
+                assert_eq!(obj.used, true);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_cannot_find_module() {
+    let mut program = load_program(
+        &["./src/resolver/test_fail_data/cannot_find_module.k"],
+        None,
+    )
+    .unwrap();
+    let scope = resolve_program(&mut program);
+    assert_eq!(scope.diagnostics[0].messages[0].pos.column, None);
+}
+
+#[test]
+fn test_resolve_program_illegal_attr_fail() {
+    let mut program = parse_program("./src/resolver/test_fail_data/attr.k").unwrap();
+    let scope = resolve_program(&mut program);
+    assert_eq!(scope.diagnostics.len(), 2);
+    let expect_err_msg = "A attribute must be string type, got 'Data'";
+    let diag = &scope.diagnostics[0];
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticId::Error(ErrorKind::IllegalAttributeError))
+    );
+    assert_eq!(diag.messages.len(), 1);
+    assert_eq!(diag.messages[0].pos.line, 4);
+    assert_eq!(diag.messages[0].message, expect_err_msg,);
+    let diag = &scope.diagnostics[1];
+    assert_eq!(
+        diag.code,
+        Some(DiagnosticId::Error(ErrorKind::IllegalAttributeError))
+    );
+    assert_eq!(diag.messages.len(), 1);
+    assert_eq!(diag.messages[0].message, expect_err_msg,);
+    assert_eq!(diag.messages[0].pos.line, 5);
+}
