@@ -46,12 +46,16 @@ fn filter_results(key_values: &ValueRef) -> Vec<ValueRef> {
             }
         } else if value.is_dict() {
             let filtered = filter_results(value);
-            let result = results.get_mut(0).unwrap();
-            result.dict_update_key_value(key.as_str(), filtered[0].clone());
-            // if the value has derived 'STANDALONE' instances, extend them
-            if filtered.len() > 1 {
-                for v in &filtered[1..] {
-                    results.push(v.clone());
+            if !results.is_empty() {
+                let result = results.get_mut(0).unwrap();
+                if !filtered.is_empty() {
+                    result.dict_update_key_value(key.as_str(), filtered[0].clone());
+                }
+                // if the value has derived 'STANDALONE' instances, extend them
+                if filtered.len() > 1 {
+                    for v in &filtered[1..] {
+                        results.push(v.clone());
+                    }
                 }
             }
         } else if value.is_list() {
