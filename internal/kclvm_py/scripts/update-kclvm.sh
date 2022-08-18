@@ -117,6 +117,32 @@ if [ -e $topdir/kclvm/target/release/libkclvm.dll ]; then
     cp $topdir/kclvm/target/release/libkclvm.dll $kclvm_install_dir/lib/libkclvm_native_shared.dll
 fi
 
+cd $topdir/kclvm/capi
+## Native
+cargo build --release
+
+# Darwin dylib
+if [ -e $topdir/kclvm/target/release/libkclvm_capi.dylib ]; then
+    touch $kclvm_install_dir/lib/libkclvm_capi.dylib
+    rm $kclvm_install_dir/lib/libkclvm_capi.dylib
+    cp $topdir/kclvm/target/release/libkclvm_capi.dylib $kclvm_install_dir/lib/
+    cp $topdir/kclvm/target/release/libkclvm_capi.dylib $kclvm_install_dir/lib/libkclvm_capi.dylib
+fi
+# Linux so
+if [ -e $topdir/kclvm/target/release/libkclvm_capi.so ]; then
+    touch $kclvm_install_dir/lib/libkclvm_capi.so
+    rm $kclvm_install_dir/lib/libkclvm_capi.so
+    cp $topdir/kclvm/target/release/libkclvm_capi.so $kclvm_install_dir/lib/
+    cp $topdir/kclvm/target/release/libkclvm_capi.so $kclvm_install_dir/lib/libkclvm_capi.so
+fi
+# Windows dll
+if [ -e $topdir/kclvm/target/release/libkclvm_capi.dll ]; then
+    touch $kclvm_install_dir/lib/libkclvm_capi.dll
+    rm $kclvm_install_dir/lib/libkclvm_capi.dll
+    cp $topdir/kclvm/target/release/libkclvm_capi.dll $kclvm_install_dir/lib/
+    cp $topdir/kclvm/target/release/libkclvm_capi.dll $kclvm_install_dir/lib/libkclvm_capi.dll
+fi
+
 # WASM
 # rustup target add wasm32-unknown-unknown
 # cargo build --release --target wasm32-unknown-unknown

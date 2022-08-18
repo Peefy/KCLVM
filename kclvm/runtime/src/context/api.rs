@@ -1,6 +1,7 @@
 // Copyright 2021 The KCL Authors. All rights reserved.
 
 use crate::*;
+use std::cell::RefCell;
 use std::os::raw::c_char;
 
 #[allow(dead_code, non_camel_case_types)]
@@ -39,28 +40,27 @@ type kclvm_float_t = f64;
 
 // singleton
 
-#[allow(non_camel_case_types, non_upper_case_globals)]
-static mut _kclvm_context_current: u64 = 0;
+thread_local!(static _KCLVM_CONTEXT_CURRENT: RefCell<u64>  = RefCell::new(0));
 
 #[no_mangle]
 #[runtime_fn]
 pub extern "C" fn kclvm_context_current() -> *mut kclvm_context_t {
-    unsafe {
-        if _kclvm_context_current == 0 {
-            _kclvm_context_current = kclvm_context_new() as u64;
+    _KCLVM_CONTEXT_CURRENT.with(|cur_ctx| {
+        if *cur_ctx.borrow() == 0 {
+            kclvm_context_new();
         }
-        _kclvm_context_current as *mut kclvm_context_t
-    }
+        *cur_ctx.borrow() as *mut kclvm_context_t
+    })
 }
 
 #[no_mangle]
 #[runtime_fn]
 pub extern "C" fn kclvm_context_new() -> *mut kclvm_context_t {
     let p = Box::into_raw(Box::new(Context::new()));
-    unsafe {
-        _kclvm_context_current = p as u64;
-    }
-    p
+    _KCLVM_CONTEXT_CURRENT.with(|cur_ctx| {
+        *cur_ctx.borrow_mut() = p as u64;
+        p
+    })
 }
 
 #[no_mangle]

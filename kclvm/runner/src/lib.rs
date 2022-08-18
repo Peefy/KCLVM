@@ -74,7 +74,7 @@ pub fn execute(
     // Create a temp entry file and the temp dir will be delete automatically
     let temp_dir = tempdir().unwrap();
     let temp_dir_path = temp_dir.path().to_str().unwrap();
-    let temp_entry_file = temp_file(temp_dir_path);
+    let temp_entry_file = temp_file(".");
 
     // Generate libs
     let lib_paths = assembler::KclvmAssembler::default().gen_libs(
