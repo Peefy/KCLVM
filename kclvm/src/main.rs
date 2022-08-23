@@ -3,13 +3,15 @@
 #[macro_use]
 extern crate clap;
 
-use kclvm_runner::{execute, ExecProgramArgs};
-
 use clap::ArgMatches;
+use std::io::Write;
+
+use kclvm::ValueRef;
 use kclvm_config::settings::{load_file, merge_settings, SettingsFile};
 use kclvm_parser::load_program;
+use kclvm_runner::{execute, ExecProgramArgs};
 
-fn main() {
+fn _main() {
     let matches = clap_app!(kcl =>
         (@subcommand run =>
             (@arg INPUT: ... "Sets the input file to use")
@@ -48,11 +50,26 @@ fn main() {
                 let program = load_program(&files, Some(args.get_load_program_options())).unwrap();
                 // Resolve AST program, generate libs, link libs and execute.
                 // TODO: The argument "plugin_agent" need to be read from python3.
-                execute(program, 0, &ExecProgramArgs::default()).unwrap();
+                let result = execute(program, 1, &ExecProgramArgs::default()).unwrap();
+                print!(
+                    "{}",
+                    ValueRef::from_yaml(&result)
+                        .unwrap()
+                        .plan_to_yaml_string_with_delimiter()
+                );
+                std::io::stdout().flush().unwrap();
             }
         }
     } else {
         println!("{}", matches.usage());
+    }
+}
+
+fn main() {
+    for _ in 0..200000000 {
+        let mut program = load_program(&["../samples/hello.k"], None).unwrap(); // Resolve ast
+        let result = execute(program, 1, &ExecProgramArgs::default());
+        println!("{:?}", result);
     }
 }
 
