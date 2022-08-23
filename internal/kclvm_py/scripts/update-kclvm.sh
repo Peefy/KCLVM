@@ -143,6 +143,12 @@ if [ -e $topdir/kclvm/target/release/libkclvm_capi.dll ]; then
     cp $topdir/kclvm/target/release/libkclvm_capi.dll $kclvm_install_dir/lib/libkclvm_capi.dll
 fi
 
+#build capi go rpc server
+cd $topdir/gorpc
+go build
+cp $topdir/gorpc/gorpc $kclvm_install_dir/bin/
+rm $topdir/gorpc/gorpc
+
 # WASM
 # rustup target add wasm32-unknown-unknown
 # cargo build --release --target wasm32-unknown-unknown
