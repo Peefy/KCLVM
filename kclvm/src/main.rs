@@ -4,12 +4,11 @@
 extern crate clap;
 
 use clap::ArgMatches;
-use std::io::Write;
-
-use kclvm::ValueRef;
+use kclvm::PanicInfo;
 use kclvm_config::settings::{load_file, merge_settings, SettingsFile};
-use kclvm_parser::load_program;
-use kclvm_runner::{execute, ExecProgramArgs};
+use kclvm_error::Handler;
+use kclvm_runner::{exec_program, ExecProgramArgs};
+use kclvm_tools::lint::lint_files;
 
 fn main() {
     let matches = clap_app!(kcl =>
@@ -17,28 +16,57 @@ fn main() {
             (@arg INPUT: ... "Sets the input file to use")
             (@arg OUTPUT: -o --output +takes_value "Sets the LLVM IR/BC output file path")
             (@arg SETTING: ... -Y --setting +takes_value "Sets the input file to use")
-            (@arg EMIT_TYPE: --emit +takes_value "Sets the emit type, expect (ast)")
-            (@arg BC_PATH: --bc +takes_value "Sets the linked LLVM bitcode file path")
             (@arg verbose: -v --verbose "Print test information verbosely")
             (@arg disable_none: -n --disable-none "Disable dumping None values")
             (@arg debug: -d --debug "Run in debug mode (for developers only)")
             (@arg sort_key: -k --sort "Sort result keys")
             (@arg ARGUMENT: ... -D --argument "Specify the top-level argument")
         )
+        (@subcommand lint =>
+            (@arg INPUT: ... "Sets the input file to use")
+            (@arg OUTPUT: -o --output +takes_value "Sets the LLVM IR/BC output file path")
+            (@arg SETTING: ... -Y --setting +takes_value "Sets the input file to use")
+            (@arg verbose: -v --verbose "Print test information verbosely")
+            (@arg disable_none: -n --disable-none "Disable dumping None values")
+            (@arg debug: -d --debug "Run in debug mode (for developers only)")
+            (@arg sort_key: -k --sort "Sort result keys")
+            (@arg ARGUMENT: ... -D --argument "Specify the top-level argument")
+            (@arg EMIT_WARNING: --emit_warning "Emit warning message")
+        )
     )
+    .arg_required_else_help(true)
     .get_matches();
     if let Some(matches) = matches.subcommand_matches("run") {
-        match (matches.values_of("INPUT"), matches.values_of("SETTING")) {
-            (None, None) => {
-                println!("{}", matches.usage());
+        let (files, setting) = (matches.values_of("INPUT"), matches.values_of("SETTING"));
+        match (files, setting) {
+            (None, None) => println!("Error: no KCL files"),
+            (_, _) => {
+                // Config settings build
+                let settings = build_settings(matches);
+                match exec_program(&settings.into(), 1) {
+                    Ok(result) => {
+                        println!("{}", result.yaml_result);
+                    }
+                    Err(msg) => {
+                        let mut handler = Handler::default();
+                        handler
+                            .add_panic_info(&PanicInfo::from_json_string(&msg))
+                            .abort_if_any_errors();
+                    }
+                }
             }
+        }
+    } else if let Some(matches) = matches.subcommand_matches("lint") {
+        let (files, setting) = (matches.values_of("INPUT"), matches.values_of("SETTING"));
+        match (files, setting) {
+            (None, None) => println!("Error: no KCL files"),
             (_, _) => {
                 let mut files: Vec<&str> = match matches.values_of("INPUT") {
                     Some(files) => files.into_iter().collect::<Vec<&str>>(),
                     None => vec![],
                 };
                 // Config settings build
-                let settings = build_settings(&matches);
+                let settings = build_settings(matches);
                 // Convert settings into execute arguments.
                 let args: ExecProgramArgs = settings.into();
                 files = if !files.is_empty() {
@@ -46,27 +74,25 @@ fn main() {
                 } else {
                     args.get_files()
                 };
-                // Parse AST program.
-                let program = load_program(&files, Some(args.get_load_program_options())).unwrap();
-                // Resolve AST program, generate libs, link libs and execute.
-                // TODO: The argument "plugin_agent" need to be read from python3.
-                let result = execute(program, 1, &ExecProgramArgs::default()).unwrap();
-                print!(
-                    "{}",
-                    ValueRef::from_yaml(&result)
-                        .unwrap()
-                        .plan_to_yaml_string_with_delimiter()
-                );
-                std::io::stdout().flush().unwrap();
+                let (mut err_handler, mut warning_handler) =
+                    (Handler::default(), Handler::default());
+                (err_handler.diagnostics, warning_handler.diagnostics) =
+                    lint_files(&files, Some(args.get_load_program_options()));
+                err_handler.emit();
+                if matches.occurrences_of("EMIT_WARNING") > 0 {
+                    warning_handler.emit();
+                }
             }
         }
-    } else {
-        println!("{}", matches.usage());
     }
 }
 
 /// Build settings from arg matches.
 fn build_settings(matches: &ArgMatches) -> SettingsFile {
+    let files: Vec<&str> = match matches.values_of("INPUT") {
+        Some(files) => files.into_iter().collect::<Vec<&str>>(),
+        None => vec![],
+    };
     let debug_mode = matches.occurrences_of("debug") > 0;
     let disable_none = matches.occurrences_of("disable_none") > 0;
 
@@ -82,6 +108,9 @@ fn build_settings(matches: &ArgMatches) -> SettingsFile {
         SettingsFile::new()
     };
     if let Some(config) = &mut settings.kcl_cli_configs {
+        if !files.is_empty() {
+            config.files = Some(files.iter().map(|f| f.to_string()).collect());
+        }
         config.debug = Some(debug_mode);
         config.disable_none = Some(disable_none);
     }

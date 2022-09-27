@@ -1,0 +1,41 @@
+[package]
+name = "rustc_data_structures"
+version = "0.0.1"
+edition = "2021"
+authors = ["zongzhe1024@163.com"]
+license = "Apache-2.0 OR MIT"
+description = "Reuse rustc_data_structures for compiler_base"
+readme = "README.md"
+homepage = "https://github.com/KusionStack/KCLVM"
+repository = "https://github.com/KusionStack/KCLVM"
+keywords = ["rustc", "data_structures"]
+categories = ["command-line-utilities"]
+
+[lib]
+doctest = false
+
+[dependencies]
+arrayvec = { version = "0.7", default-features = false }
+ena = "0.14"
+indexmap = { version = "1.8.0", features = ["rustc-rayon"] }
+tracing = "0.1"
+jobserver_crate = { version = "0.1.13", package = "jobserver" }
+
+cfg-if = "0.1.2"
+stable_deref_trait = "1.0.0"
+rayon = { version = "0.3.2", package = "rustc-rayon" }
+rayon-core = { version = "0.3.2", package = "rustc-rayon-core" }
+rustc-hash = "1.1.0"
+bitflags = "1.2.1"
+libc = "0.2"
+stacker = "0.1.14"
+tempfile = "3.2"
+
+[dependencies.parking_lot]
+version = "0.12"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["fileapi", "psapi", "winerror"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+memmap2 = "0.2.1"

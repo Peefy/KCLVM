@@ -32,12 +32,13 @@ const IMPORT_STMT_COLUMN_OFFSET: u64 = 1;
 /// let mut prog = load_program(&["config.k"], None).unwrap();
 /// let overrides = vec![parse_override_spec("config.id=1").unwrap()];
 /// let import_paths = vec!["path.to.pkg".to_string()];
-/// let result = apply_overrides(&mut prog, &overrides, &import_paths).unwrap();
+/// let result = apply_overrides(&mut prog, &overrides, &import_paths, true).unwrap();
 /// ```
 pub fn apply_overrides(
     prog: &mut ast::Program,
     overrides: &[ast::OverrideSpec],
     import_paths: &[String],
+    print_ast: bool,
 ) -> Result<()> {
     for o in overrides {
         let pkgpath = if o.pkgpath.is_empty() {
@@ -47,7 +48,7 @@ pub fn apply_overrides(
         };
         if let Some(modules) = prog.pkgs.get_mut(pkgpath) {
             for m in modules.iter_mut() {
-                if apply_override_on_module(m, o, import_paths)? {
+                if apply_override_on_module(m, o, import_paths)? && print_ast {
                     let code_str = print_ast_module(m);
                     std::fs::write(&m.filename, &code_str)?
                 }
@@ -55,6 +56,28 @@ pub fn apply_overrides(
         }
     }
     Ok(())
+}
+
+/// Build a expression from string.
+fn build_expr_from_string(value: &str) -> Option<ast::NodeRef<ast::Expr>> {
+    let expr: Option<ast::NodeRef<ast::Expr>> = parse_expr(value);
+    match &expr {
+        Some(e) => match &e.node {
+            // fix attr=value to attr="value"
+            ast::Expr::Identifier(_) | ast::Expr::Unary(_) | ast::Expr::Binary(_) => {
+                Some(ast::NodeRef::new(ast::Node::node_with_pos(
+                    ast::Expr::StringLit(ast::StringLit {
+                        is_long_string: false,
+                        raw_value: format!("{:?}", value),
+                        value: value.to_string(),
+                    }),
+                    e.pos(),
+                )))
+            }
+            _ => expr,
+        },
+        None => None,
+    }
 }
 
 /// Apply overrides on the AST module with the override specifications.
@@ -107,7 +130,7 @@ pub fn apply_override_on_module(
         target_id: target_id.to_string(),
         field_path: field,
         override_key: key,
-        override_value: parse_expr(value),
+        override_value: build_expr_from_string(value),
         override_target_count: 0,
         has_override: false,
         action: o.action.clone(),
