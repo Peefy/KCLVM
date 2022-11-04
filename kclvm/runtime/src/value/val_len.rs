@@ -4,13 +4,17 @@ use crate::*;
 
 impl ValueRef {
     pub fn len(&self) -> usize {
-        match *self.rc {
+        match *self.rc.borrow() {
             Value::str_value(ref s) => s.len(),
             Value::list_value(ref v) => v.values.len(),
             Value::dict_value(ref v) => v.values.len(),
             Value::schema_value(ref v) => v.config.values.len(),
             _ => panic!("object of type '{}' has no len()", self.type_str()),
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0_usize
     }
 }
 
@@ -31,7 +35,7 @@ mod test_value_len {
             3 * 10
         );
         assert_eq!(ValueRef::list_n(10, &ValueRef::undefined()).len(), 10);
-        assert_eq!(ValueRef::list_int(&vec![1 as i64, 2, 3]).len(), 3);
+        assert_eq!(ValueRef::list_int(&[1_i64, 2, 3]).len(), 3);
     }
 
     #[test]

@@ -8,26 +8,20 @@ impl ValueRef {
         let strict_range_check_32 = ctx.cfg.strict_range_check;
         let strict_range_check_64 = ctx.cfg.debug_mode || !ctx.cfg.strict_range_check;
 
-        match (&*self.rc, &*x.rc) {
+        match (&*self.rc.borrow(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_i32_overflow_add(*a, *b) {
-                        panic_i32_overflow!(*a as i128 + *b as i128);
-                    }
+                if strict_range_check_32 && is_i32_overflow_add(*a, *b) {
+                    panic_i32_overflow!(*a as i128 + *b as i128);
                 }
-                if strict_range_check_64 {
-                    if is_i64_overflow_add(*a, *b) {
-                        panic_i64_overflow!(*a as i128 + *b as i128);
-                    }
+                if strict_range_check_64 && is_i64_overflow_add(*a, *b) {
+                    panic_i64_overflow!(*a as i128 + *b as i128);
                 }
 
                 Self::int(*a + *b)
             }
             (Value::float_value(a), Value::float_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_add(*a, *b) {
-                        panic_f32_overflow!(*a + *b);
-                    }
+                if strict_range_check_32 && is_f32_overflow_add(*a, *b) {
+                    panic_f32_overflow!(*a + *b);
                 }
                 Self::float(*a + *b)
             }
@@ -72,41 +66,31 @@ impl ValueRef {
         let strict_range_check_32 = ctx.cfg.strict_range_check;
         let strict_range_check_64 = ctx.cfg.debug_mode || !ctx.cfg.strict_range_check;
 
-        match (&*self.rc, &*x.rc) {
+        match (&*self.rc.borrow(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_i32_overflow_sub(*a, *b) {
-                        panic_i32_overflow!(*a as i128 - *b as i128);
-                    }
+                if strict_range_check_32 && is_i32_overflow_sub(*a, *b) {
+                    panic_i32_overflow!(*a as i128 - *b as i128);
                 }
-                if strict_range_check_64 {
-                    if is_i64_overflow_sub(*a, *b) {
-                        panic_i32_overflow!(*a as i128 - *b as i128);
-                    }
+                if strict_range_check_64 && is_i64_overflow_sub(*a, *b) {
+                    panic_i32_overflow!(*a as i128 - *b as i128);
                 }
                 Self::int(*a - *b)
             }
             (Value::float_value(a), Value::float_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_sub(*a, *b) {
-                        panic_f32_overflow!(*a - *b);
-                    }
+                if strict_range_check_32 && is_f32_overflow_sub(*a, *b) {
+                    panic_f32_overflow!(*a - *b);
                 }
                 Self::float(*a - *b)
             }
             (Value::int_value(a), Value::float_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_sub(*a as f64, *b) {
-                        panic_f32_overflow!(*a as f64 - *b);
-                    }
+                if strict_range_check_32 && is_f32_overflow_sub(*a as f64, *b) {
+                    panic_f32_overflow!(*a as f64 - *b);
                 }
                 Self::float(*a as f64 - *b)
             }
             (Value::float_value(a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_sub(*a, *b as f64) {
-                        panic_f32_overflow!(*a - *b as f64);
-                    }
+                if strict_range_check_32 && is_f32_overflow_sub(*a, *b as f64) {
+                    panic_f32_overflow!(*a - *b as f64);
                 }
                 Self::float(*a - *b as f64)
             }
@@ -119,41 +103,31 @@ impl ValueRef {
         let strict_range_check_32 = ctx.cfg.strict_range_check;
         let strict_range_check_64 = ctx.cfg.debug_mode || !ctx.cfg.strict_range_check;
 
-        match (&*self.rc, &*x.rc) {
+        match (&*self.rc.borrow(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_i32_overflow_mul(*a, *b) {
-                        panic_i32_overflow!(*a as i128 * *b as i128);
-                    }
+                if strict_range_check_32 && is_i32_overflow_mul(*a, *b) {
+                    panic_i32_overflow!(*a as i128 * *b as i128);
                 }
-                if strict_range_check_64 {
-                    if is_i64_overflow_mul(*a, *b) {
-                        panic_i64_overflow!(*a as i128 * *b as i128);
-                    }
+                if strict_range_check_64 && is_i64_overflow_mul(*a, *b) {
+                    panic_i64_overflow!(*a as i128 * *b as i128);
                 }
                 Self::int(*a * *b)
             }
             (Value::float_value(a), Value::float_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_mul(*a, *b) {
-                        panic_f32_overflow!(*a * *b);
-                    }
+                if strict_range_check_32 && is_f32_overflow_mul(*a, *b) {
+                    panic_f32_overflow!(*a * *b);
                 }
                 Self::float(*a * *b)
             }
             (Value::int_value(a), Value::float_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_mul(*a as f64, *b) {
-                        panic_f32_overflow!(*a as f64 * *b);
-                    }
+                if strict_range_check_32 && is_f32_overflow_mul(*a as f64, *b) {
+                    panic_f32_overflow!(*a as f64 * *b);
                 }
                 Self::float(*a as f64 * *b)
             }
             (Value::float_value(a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_mul(*a, *b as f64) {
-                        panic_f32_overflow!(*a * *b as f64);
-                    }
+                if strict_range_check_32 && is_f32_overflow_mul(*a, *b as f64) {
+                    panic_f32_overflow!(*a * *b as f64);
                 }
                 Self::float(*a * *b as f64)
             }
@@ -167,7 +141,7 @@ impl ValueRef {
                         list.values.push(x.clone());
                     }
                 }
-                Self::from(Value::list_value(list))
+                Self::from(Value::list_value(Box::new(list)))
             }
             (Value::int_value(b), Value::list_value(a)) => {
                 let mut list = ListValue::default();
@@ -176,14 +150,14 @@ impl ValueRef {
                         list.values.push(x.clone());
                     }
                 }
-                Self::from(Value::list_value(list))
+                Self::from(Value::list_value(Box::new(list)))
             }
             _ => panic_unsupported_bin_op!("*", self.type_str(), x.type_str()),
         }
     }
 
     pub fn bin_div(&self, x: &Self) -> Self {
-        match (&*self.rc, &*x.rc) {
+        match (&*self.rc.borrow(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => Self::float((*a as f64) / (*b as f64)),
             (Value::float_value(a), Value::float_value(b)) => Self::float(*a / *b),
             (Value::int_value(a), Value::float_value(b)) => Self::float(*a as f64 / *b),
@@ -193,11 +167,11 @@ impl ValueRef {
     }
 
     pub fn bin_mod(&self, x: &Self) -> Self {
-        match (&*self.rc, &*x.rc) {
+        match (&*self.rc.borrow(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
                 let x = *a;
                 let y = *b;
-                if -13 / 5 == -2 && (x < 0) != (y < 0) && x % y != 0 {
+                if (x < 0) != (y < 0) && x % y != 0 {
                     Self::int(x % y + y)
                 } else {
                     Self::int(x % y)
@@ -215,41 +189,31 @@ impl ValueRef {
         let strict_range_check_32 = ctx.cfg.strict_range_check;
         let strict_range_check_64 = ctx.cfg.debug_mode || !ctx.cfg.strict_range_check;
 
-        match (&*self.rc, &*x.rc) {
+        match (&*self.rc.borrow(), &*x.rc.borrow()) {
             (Value::int_value(ref a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_i32_overflow_pow(*a, *b) {
-                        panic_i32_overflow!((*a as i128).pow(*b as u32));
-                    }
+                if strict_range_check_32 && is_i32_overflow_pow(*a, *b) {
+                    panic_i32_overflow!((*a as i128).pow(*b as u32));
                 }
-                if strict_range_check_64 {
-                    if is_i64_overflow_pow(*a, *b) {
-                        panic_i64_overflow!((*a as i128).pow(*b as u32));
-                    }
+                if strict_range_check_64 && is_i64_overflow_pow(*a, *b) {
+                    panic_i64_overflow!((*a as i128).pow(*b as u32));
                 }
                 Self::int(a.pow(*b as u32))
             }
             (Value::float_value(a), Value::float_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_pow(*a, *b) {
-                        panic_f32_overflow!(a.powf(*b));
-                    }
+                if strict_range_check_32 && is_f32_overflow_pow(*a, *b) {
+                    panic_f32_overflow!(a.powf(*b));
                 }
                 Self::float(a.powf(*b))
             }
             (Value::int_value(a), Value::float_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_pow(*a as f64, *b) {
-                        panic_f32_overflow!((*a as f64).powf(*b));
-                    }
+                if strict_range_check_32 && is_f32_overflow_pow(*a as f64, *b) {
+                    panic_f32_overflow!((*a as f64).powf(*b));
                 }
                 Self::float((*a as f64).powf(*b))
             }
             (Value::float_value(a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_pow(*a, *b as f64) {
-                        panic_f32_overflow!(a.powf(*b as f64));
-                    }
+                if strict_range_check_32 && is_f32_overflow_pow(*a, *b as f64) {
+                    panic_f32_overflow!(a.powf(*b as f64));
                 }
                 Self::float(a.powf(*b as f64))
             }
@@ -258,11 +222,11 @@ impl ValueRef {
     }
 
     pub fn bin_floor_div(&self, x: &Self) -> Self {
-        match (&*self.rc, &*x.rc) {
+        match (&*self.rc.borrow(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
                 let x = *a;
                 let y = *b;
-                if -13 / 5 == -2 && (x < 0) != (y < 0) && x % y != 0 {
+                if (x < 0) != (y < 0) && x % y != 0 {
                     Self::int(x / y - 1)
                 } else {
                     Self::int(x / y)
@@ -280,17 +244,13 @@ impl ValueRef {
         let strict_range_check_32 = ctx.cfg.strict_range_check;
         let strict_range_check_64 = ctx.cfg.debug_mode || !ctx.cfg.strict_range_check;
 
-        match (&*self.rc, &*x.rc) {
+        match (&*self.rc.borrow(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_i32_overflow_shl(*a, *b) {
-                        panic_i32_overflow!((*a as i128) << (*b as u32));
-                    }
+                if strict_range_check_32 && is_i32_overflow_shl(*a, *b) {
+                    panic_i32_overflow!((*a as i128) << (*b as u32));
                 }
-                if strict_range_check_64 {
-                    if is_i64_overflow_shl(*a, *b) {
-                        panic_i64_overflow!((*a as i128) << (*b as u32));
-                    }
+                if strict_range_check_64 && is_i64_overflow_shl(*a, *b) {
+                    panic_i64_overflow!((*a as i128) << (*b as u32));
                 }
                 Self::int(*a << *b)
             }
@@ -303,17 +263,13 @@ impl ValueRef {
         let strict_range_check_32 = ctx.cfg.strict_range_check;
         let strict_range_check_64 = ctx.cfg.debug_mode || !ctx.cfg.strict_range_check;
 
-        match (&*self.rc, &*x.rc) {
+        match (&*self.rc.borrow(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_i32_overflow_shr(*a, *b) {
-                        panic_i32_overflow!((*a as i128) >> (*b as u32));
-                    }
+                if strict_range_check_32 && is_i32_overflow_shr(*a, *b) {
+                    panic_i32_overflow!((*a as i128) >> (*b as u32));
                 }
-                if strict_range_check_64 {
-                    if is_i64_overflow_shr(*a, *b) {
-                        panic_i64_overflow!((*a as i128) >> (*b as u32));
-                    }
+                if strict_range_check_64 && is_i64_overflow_shr(*a, *b) {
+                    panic_i64_overflow!((*a as i128) >> (*b as u32));
                 }
                 Self::int(*a >> *b)
             }
@@ -322,28 +278,29 @@ impl ValueRef {
     }
 
     pub fn bin_bit_and(&self, x: &Self) -> Self {
-        match (&*self.rc, &*x.rc) {
+        match (&*self.rc.borrow(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => Self::int(*a & *b),
             _ => panic_unsupported_bin_op!("&", self.type_str(), x.type_str()),
         }
     }
 
     pub fn bin_bit_xor(&self, x: &Self) -> Self {
-        match (&*self.rc, &*x.rc) {
+        match (&*self.rc.borrow(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => Self::int(*a ^ *b),
             _ => panic_unsupported_bin_op!("^", self.type_str(), x.type_str()),
         }
     }
 
     pub fn bin_bit_or(&self, x: &Self) -> Self {
-        match (&*self.rc, &*x.rc) {
-            (Value::int_value(a), Value::int_value(b)) => Self::int(*a | *b),
-            _ => self.deep_copy().union(x, true, false, true, true),
+        match (&*self.rc.borrow(), &*x.rc.borrow()) {
+            (Value::int_value(a), Value::int_value(b)) => return Self::int(*a | *b),
+            _ => {}
         }
+        self.deep_copy().union(x, true, false, true, true)
     }
 
     pub fn bin_subscr(&self, x: &Self) -> Self {
-        match (&*self.rc, &*x.rc) {
+        match (&*self.rc.borrow(), &*x.rc.borrow()) {
             (Value::str_value(a), Value::int_value(b)) => {
                 let str_len = a.chars().count();
                 let index = *b;
@@ -356,7 +313,7 @@ impl ValueRef {
                     let ch = a.chars().nth(index).unwrap();
                     Self::str(ch.to_string().as_ref())
                 } else {
-                    panic!("string index out of range: {}", b.to_string());
+                    panic!("string index out of range: {}", b);
                 }
             }
             (Value::list_value(a), Value::int_value(b)) => {
@@ -369,7 +326,7 @@ impl ValueRef {
                 if index < a.values.len() {
                     a.values[index].clone()
                 } else {
-                    panic!("list index out of range: {}", b.to_string());
+                    panic!("list index out of range: {}", b);
                 }
             }
             (Value::dict_value(a), Value::str_value(b)) => match a.values.get(b) {

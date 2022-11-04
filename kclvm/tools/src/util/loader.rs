@@ -5,7 +5,11 @@ use anyhow::{bail, Context, Result};
 pub(crate) trait Loader<T> {
     fn load(&self) -> Result<T>;
 }
-pub(crate) enum LoaderKind {
+
+/// Types of verifiable files currently supported by KCL-Vet,
+/// currently only YAML files and Json files are supported.
+#[derive(Clone, Copy)]
+pub enum LoaderKind {
     YAML,
     JSON,
 }
@@ -31,6 +35,7 @@ impl DataLoader {
     }
 
     /// If `DataLoader` is constructed using a Json/Yaml string, then `content` is the string
+    #[allow(dead_code)]
     pub(crate) fn new_with_str(loader_kind: LoaderKind, content: &str) -> Result<Self> {
         Ok(Self {
             kind: loader_kind,
@@ -40,6 +45,10 @@ impl DataLoader {
 
     pub(crate) fn get_data(&self) -> &str {
         &self.content
+    }
+
+    pub(crate) fn get_kind(&self) -> &LoaderKind {
+        &self.kind
     }
 }
 

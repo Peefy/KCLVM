@@ -16,7 +16,7 @@ impl ValueRef {
     pub fn from_yaml(s: &str) -> Option<Self> {
         let json_value: serde_json::Value = serde_yaml::from_str(s).unwrap();
         match serde_json::to_string(&json_value) {
-            Ok(s) => Self::from_json(s.as_ref()),
+            Ok(s) => Some(Self::from_json(s.as_ref()).unwrap()),
             _ => None,
         }
     }
@@ -48,7 +48,7 @@ impl ValueRef {
     }
 
     fn yaml_clone_with_filter(&self, opt: &YamlEncodeOptions) -> Self {
-        match &*self.rc {
+        match &*self.rc.borrow() {
             Value::undefined => ValueRef::undefined(),
             Value::none => ValueRef::none(),
 
@@ -60,7 +60,7 @@ impl ValueRef {
             Value::list_value(ref v) => {
                 let mut list = ValueRef::list(None);
                 for x in v.values.iter() {
-                    match *x.rc {
+                    match *x.rc.borrow() {
                         Value::undefined => {
                             continue;
                         }
@@ -85,7 +85,7 @@ impl ValueRef {
                     if opt.ignore_private && (*key).starts_with(KCL_PRIVATE_VAR_PREFIX) {
                         continue;
                     }
-                    match *val.rc {
+                    match *val.rc.borrow() {
                         Value::undefined => {
                             continue;
                         }
@@ -121,7 +121,7 @@ impl ValueRef {
                     if opt.ignore_private && (*key).starts_with(KCL_PRIVATE_VAR_PREFIX) {
                         continue;
                     }
-                    match *val.rc {
+                    match *val.rc.borrow() {
                         Value::undefined => {
                             continue;
                         }

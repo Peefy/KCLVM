@@ -8,65 +8,57 @@ impl ValueRef {
         let strict_range_check_32 = ctx.cfg.strict_range_check;
         let strict_range_check_64 = ctx.cfg.debug_mode || !ctx.cfg.strict_range_check;
 
-        match (&*self.rc, &*x.rc) {
+        let valid = match (&mut *self.rc.borrow_mut(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_i32_overflow_add(*a, *b) {
-                        panic_i32_overflow!(*a as i128 + *b as i128);
-                    }
+                if strict_range_check_32 && is_i32_overflow_add(*a, *b) {
+                    panic_i32_overflow!(*a as i128 + *b as i128);
                 }
-                if strict_range_check_64 {
-                    if is_i64_overflow_add(*a, *b) {
-                        panic_i64_overflow!(*a as i128 + *b as i128);
-                    }
+                if strict_range_check_64 && is_i64_overflow_add(*a, *b) {
+                    panic_i64_overflow!(*a as i128 + *b as i128);
                 }
-                let a: &mut i64 = get_ref_mut(a);
                 *a += *b;
-                self
+                true
             }
             (Value::float_value(a), Value::float_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_add(*a, *b) {
-                        panic_f32_overflow!(*a + *b);
-                    }
+                if strict_range_check_32 && is_f32_overflow_add(*a, *b) {
+                    panic_f32_overflow!(*a + *b);
                 }
-                let a: &mut f64 = get_ref_mut(a);
                 *a += *b;
-                self
+                true
             }
             (Value::int_value(a), Value::float_value(b)) => {
                 if is_f32_overflow_add(*a as f64, *b) {
                     panic_f32_overflow!(*a as f64 + *b);
                 }
-                let a: &mut i64 = get_ref_mut(a);
                 *a += *b as i64;
-                self
+                true
             }
             (Value::float_value(a), Value::int_value(b)) => {
                 if is_f32_overflow_add(*a, *b as f64) {
                     panic_f32_overflow!(*a + *b as f64);
                 }
-                let a: &mut f64 = get_ref_mut(a);
                 *a += *b as f64;
-                self
+                true
             }
             (Value::str_value(a), Value::str_value(b)) => {
-                let a: &mut String = get_ref_mut(a);
                 *a = format!("{}{}", *a, *b);
-                self
+                true
             }
-            (Value::list_value(a), _) => match &*x.rc {
+            (Value::list_value(a), _) => match &*x.rc.borrow() {
                 Value::list_value(ref b) => {
-                    let list: &mut ListValue = get_ref_mut(a);
                     for x in b.values.iter() {
-                        list.values.push(x.clone());
+                        a.values.push(x.clone());
                     }
-                    self
+                    true
                 }
-                _ => panic_unsupported_bin_op!("+", self.type_str(), x.type_str()),
+                _ => false,
             },
-            _ => panic_unsupported_bin_op!("+", self.type_str(), x.type_str()),
+            _ => false,
+        };
+        if !valid {
+            panic_unsupported_bin_op!("+", self.type_str(), x.type_str())
         }
+        self
     }
 
     pub fn bin_aug_sub(&mut self, x: &Self) -> &mut Self {
@@ -74,54 +66,46 @@ impl ValueRef {
         let strict_range_check_32 = ctx.cfg.strict_range_check;
         let strict_range_check_64 = ctx.cfg.debug_mode || !ctx.cfg.strict_range_check;
 
-        match (&*self.rc, &*x.rc) {
+        let valid = match (&mut *self.rc.borrow_mut(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_i32_overflow_sub(*a, *b) {
+                if strict_range_check_32 && is_i32_overflow_sub(*a, *b) {
+                    panic_i32_overflow!(*a as i128 - *b as i128);
+                }
+                if strict_range_check_64 && is_i64_overflow_sub(*a, *b) {
+                    {
                         panic_i32_overflow!(*a as i128 - *b as i128);
                     }
                 }
-                if strict_range_check_64 {
-                    if is_i64_overflow_sub(*a, *b) {
-                        panic_i32_overflow!(*a as i128 - *b as i128);
-                    }
-                }
-                let a: &mut i64 = get_ref_mut(a);
                 *a -= *b;
-                self
+                true
             }
             (Value::float_value(a), Value::float_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_sub(*a, *b) {
-                        panic_f32_overflow!(*a - *b);
-                    }
+                if strict_range_check_32 && is_f32_overflow_sub(*a, *b) {
+                    panic_f32_overflow!(*a - *b);
                 }
-                let a: &mut f64 = get_ref_mut(a);
                 *a -= *b;
-                self
+                true
             }
             (Value::int_value(a), Value::float_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_sub(*a as f64, *b) {
-                        panic_f32_overflow!(*a as f64 - *b);
-                    }
+                if strict_range_check_32 && is_f32_overflow_sub(*a as f64, *b) {
+                    panic_f32_overflow!(*a as f64 - *b);
                 }
-                let a: &mut i64 = get_ref_mut(a);
                 *a -= *b as i64;
-                self
+                true
             }
             (Value::float_value(a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_sub(*a, *b as f64) {
-                        panic_f32_overflow!(*a - *b as f64);
-                    }
+                if strict_range_check_32 && is_f32_overflow_sub(*a, *b as f64) {
+                    panic_f32_overflow!(*a - *b as f64);
                 }
-                let a: &mut f64 = get_ref_mut(a);
                 *a -= *b as f64;
-                self
+                true
             }
-            _ => panic_unsupported_bin_op!("-", self.type_str(), x.type_str()),
+            _ => false,
+        };
+        if !valid {
+            panic_unsupported_bin_op!("-", self.type_str(), x.type_str())
         }
+        self
     }
 
     pub fn bin_aug_mul(&mut self, x: &Self) -> &mut Self {
@@ -129,130 +113,118 @@ impl ValueRef {
         let strict_range_check_32 = ctx.cfg.strict_range_check;
         let strict_range_check_64 = ctx.cfg.debug_mode || !ctx.cfg.strict_range_check;
 
-        match (&*self.rc, &*x.rc) {
+        let valid = match (&mut *self.rc.borrow_mut(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_i32_overflow_mul(*a, *b) {
-                        panic_i32_overflow!(*a as i128 * *b as i128);
-                    }
+                if strict_range_check_32 && is_i32_overflow_mul(*a, *b) {
+                    panic_i32_overflow!(*a as i128 * *b as i128);
                 }
-                if strict_range_check_64 {
-                    if is_i64_overflow_mul(*a, *b) {
-                        panic_i64_overflow!(*a as i128 * *b as i128);
-                    }
+                if strict_range_check_64 && is_i64_overflow_mul(*a, *b) {
+                    panic_i64_overflow!(*a as i128 * *b as i128);
                 }
-                let a: &mut i64 = get_ref_mut(a);
                 *a *= *b;
-                self
+                true
             }
             (Value::float_value(a), Value::float_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_mul(*a, *b) {
-                        panic_f32_overflow!(*a * *b);
-                    }
+                if strict_range_check_32 && is_f32_overflow_mul(*a, *b) {
+                    panic_f32_overflow!(*a * *b);
                 }
-                let a: &mut f64 = get_ref_mut(a);
                 *a *= *b;
-                self
+                true
             }
             (Value::int_value(a), Value::float_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_mul(*a as f64, *b) {
-                        panic_f32_overflow!(*a as f64 * *b);
-                    }
+                if strict_range_check_32 && is_f32_overflow_mul(*a as f64, *b) {
+                    panic_f32_overflow!(*a as f64 * *b);
                 }
-                let a: &mut i64 = get_ref_mut(a);
                 *a *= *b as i64;
-                self
+                true
             }
             (Value::float_value(a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_mul(*a, *b as f64) {
-                        panic_f32_overflow!(*a * *b as f64);
-                    }
+                if strict_range_check_32 && is_f32_overflow_mul(*a, *b as f64) {
+                    panic_f32_overflow!(*a * *b as f64);
                 }
-                let a: &mut f64 = get_ref_mut(a);
                 *a *= *b as f64;
-                self
+                true
             }
             (Value::str_value(a), Value::int_value(b)) => {
-                let a: &mut String = get_ref_mut(a);
                 *a = a.repeat(*b as usize);
-                self
+                true
             }
-            (Value::list_value(ref list), _) => match &*x.rc {
+            (Value::list_value(list), _) => match &*x.rc.borrow() {
                 Value::int_value(ref b) => {
-                    let list: &mut ListValue = get_ref_mut(list);
                     let n = list.values.len();
                     for _ in 1..(*b as usize) {
                         for i in 0..n {
                             list.values.push(list.values[i].clone());
                         }
                     }
-                    self
+                    true
                 }
-                _ => panic_unsupported_bin_op!("*", self.type_str(), x.type_str()),
+                _ => false,
             },
-            _ => panic_unsupported_bin_op!("*", self.type_str(), x.type_str()),
+            _ => false,
+        };
+        if !valid {
+            panic_unsupported_bin_op!("*", self.type_str(), x.type_str())
         }
+        self
     }
 
     pub fn bin_aug_div(&mut self, x: &Self) -> &mut Self {
-        match (&*self.rc, &*x.rc) {
+        let valid = match (&mut *self.rc.borrow_mut(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                let a: &mut i64 = get_ref_mut(a);
                 *a /= *b;
-                self
+                true
             }
             (Value::int_value(a), Value::float_value(b)) => {
-                let a: &mut i64 = get_ref_mut(a);
                 *a /= *b as i64;
-                self
+                true
             }
             (Value::float_value(a), Value::int_value(b)) => {
-                let a: &mut f64 = get_ref_mut(a);
                 *a /= *b as f64;
-                self
+                true
             }
             (Value::float_value(a), Value::float_value(b)) => {
-                let a: &mut f64 = get_ref_mut(a);
                 *a /= *b;
-                self
+                true
             }
-            _ => panic_unsupported_bin_op!("/", self.type_str(), x.type_str()),
+            _ => false,
+        };
+        if !valid {
+            panic_unsupported_bin_op!("/", self.type_str(), x.type_str())
         }
+        self
     }
 
     pub fn bin_aug_mod(&mut self, x: &Self) -> &mut Self {
-        match (&*self.rc, &*x.rc) {
+        let valid = match (&mut *self.rc.borrow_mut(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                let a: &mut i64 = get_ref_mut(a);
                 let x = *a;
                 let y = *b;
-                if -13 / 5 == -2 && (x < 0) != (y < 0) && x % y != 0 {
+                if (x < 0) != (y < 0) && x % y != 0 {
                     *a = *a % *b + *b;
                 } else {
-                    *a = *a % *b
+                    *a %= *b
                 }
-                self
+                true
             }
             (Value::int_value(a), Value::float_value(b)) => {
-                let a: &mut i64 = get_ref_mut(a);
                 *a %= *b as i64;
-                self
+                true
             }
             (Value::float_value(a), Value::int_value(b)) => {
-                let a: &mut f64 = get_ref_mut(a);
                 *a %= *b as f64;
-                self
+                true
             }
             (Value::float_value(a), Value::float_value(b)) => {
-                let a: &mut f64 = get_ref_mut(a);
                 *a %= *b;
-                self
+                true
             }
-            _ => panic_unsupported_bin_op!("%", self.type_str(), x.type_str()),
+            _ => false,
+        };
+        if !valid {
+            panic_unsupported_bin_op!("%", self.type_str(), x.type_str())
         }
+        self
     }
 
     pub fn bin_aug_pow(&mut self, x: &Self) -> &mut Self {
@@ -260,86 +232,76 @@ impl ValueRef {
         let strict_range_check_32 = ctx.cfg.strict_range_check;
         let strict_range_check_64 = ctx.cfg.debug_mode || !ctx.cfg.strict_range_check;
 
-        match (&*self.rc, &*x.rc) {
-            (Value::int_value(ref a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_i32_overflow_pow(*a, *b) {
-                        panic_i32_overflow!((*a as i128).pow(*b as u32));
-                    }
+        let valid = match (&mut *self.rc.borrow_mut(), &*x.rc.borrow()) {
+            (Value::int_value(a), Value::int_value(b)) => {
+                if strict_range_check_32 && is_i32_overflow_pow(*a, *b) {
+                    panic_i32_overflow!((*a as i128).pow(*b as u32));
                 }
-                if strict_range_check_64 {
-                    if is_i64_overflow_pow(*a, *b) {
-                        panic_i64_overflow!((*a as i128).pow(*b as u32));
-                    }
+                if strict_range_check_64 && is_i64_overflow_pow(*a, *b) {
+                    panic_i64_overflow!((*a as i128).pow(*b as u32));
                 }
-                let a: &mut i64 = get_ref_mut(a);
                 *a = a.pow(*b as u32);
-                self
+                true
             }
-            (Value::float_value(ref a), Value::float_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_pow(*a, *b) {
-                        panic_f32_overflow!(a.powf(*b));
-                    }
+            (Value::float_value(a), Value::float_value(b)) => {
+                if strict_range_check_32 && is_f32_overflow_pow(*a, *b) {
+                    panic_f32_overflow!(a.powf(*b));
                 }
-                let a: &mut f64 = get_ref_mut(a);
                 *a = a.powf(*b as f64);
-                self
+                true
             }
-            (Value::int_value(ref a), Value::float_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_pow(*a as f64, *b) {
-                        panic_f32_overflow!((*a as f64).powf(*b));
-                    }
+            (Value::int_value(a), Value::float_value(b)) => {
+                if strict_range_check_32 && is_f32_overflow_pow(*a as f64, *b) {
+                    panic_f32_overflow!((*a as f64).powf(*b));
                 }
-                let a: &mut i64 = get_ref_mut(a);
                 *a = a.pow(*b as u32);
-                self
+                true
             }
-            (Value::float_value(ref a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_f32_overflow_pow(*a, *b as f64) {
-                        panic_f32_overflow!(a.powf(*b as f64));
-                    }
+            (Value::float_value(a), Value::int_value(b)) => {
+                if strict_range_check_32 && is_f32_overflow_pow(*a, *b as f64) {
+                    panic_f32_overflow!(a.powf(*b as f64));
                 }
-                let a: &mut f64 = get_ref_mut(a);
                 *a = a.powf(*b as f64);
-                self
+                true
             }
-            _ => panic_unsupported_bin_op!("**", self.type_str(), x.type_str()),
+            _ => false,
+        };
+        if !valid {
+            panic_unsupported_bin_op!("**", self.type_str(), x.type_str())
         }
+        self
     }
 
     pub fn bin_aug_floor_div(&mut self, x: &Self) -> &mut Self {
-        match (&*self.rc, &*x.rc) {
+        let valid = match (&mut *self.rc.borrow_mut(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                let a: &mut i64 = get_ref_mut(a);
                 let x = *a;
                 let y = *b;
-                if -13 / 5 == -2 && (x < 0) != (y < 0) && x % y != 0 {
+                if (x < 0) != (y < 0) && x % y != 0 {
                     *a = *a / *b - 1
                 } else {
                     *a /= *b
                 }
-                self
+                true
             }
             (Value::int_value(a), Value::float_value(b)) => {
-                let a: &mut i64 = get_ref_mut(a);
                 *a = (*a as f64 / *b) as i64;
-                self
+                true
             }
             (Value::float_value(a), Value::int_value(b)) => {
-                let a: &mut f64 = get_ref_mut(a);
                 *a /= *b as f64;
-                self
+                true
             }
             (Value::float_value(a), Value::float_value(b)) => {
-                let a: &mut f64 = get_ref_mut(a);
                 *a /= *b;
-                self
+                true
             }
-            _ => panic_unsupported_bin_op!("//", self.type_str(), x.type_str()),
+            _ => false,
+        };
+        if !valid {
+            panic_unsupported_bin_op!("//", self.type_str(), x.type_str())
         }
+        self
     }
 
     pub fn bin_aug_bit_lshift(&mut self, x: &Self) -> &mut Self {
@@ -347,24 +309,23 @@ impl ValueRef {
         let strict_range_check_32 = ctx.cfg.strict_range_check;
         let strict_range_check_64 = ctx.cfg.debug_mode || !ctx.cfg.strict_range_check;
 
-        match (&*self.rc, &*x.rc) {
+        let valid = match (&mut *self.rc.borrow_mut(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_i32_overflow_shl(*a, *b) {
-                        panic_i32_overflow!((*a as i128) << (*b as u32));
-                    }
+                if strict_range_check_32 && is_i32_overflow_shl(*a, *b) {
+                    panic_i32_overflow!((*a as i128) << (*b as u32));
                 }
-                if strict_range_check_64 {
-                    if is_i64_overflow_shl(*a, *b) {
-                        panic_i64_overflow!((*a as i128) << (*b as u32));
-                    }
+                if strict_range_check_64 && is_i64_overflow_shl(*a, *b) {
+                    panic_i64_overflow!((*a as i128) << (*b as u32));
                 }
-                let a: &mut i64 = get_ref_mut(a);
                 *a <<= *b as usize;
-                self
+                true
             }
-            _ => panic_unsupported_bin_op!("<<", self.type_str(), x.type_str()),
+            _ => false,
+        };
+        if !valid {
+            panic_unsupported_bin_op!("<<", self.type_str(), x.type_str())
         }
+        self
     }
 
     pub fn bin_aug_bit_rshift(&mut self, x: &Self) -> &mut Self {
@@ -372,63 +333,69 @@ impl ValueRef {
         let strict_range_check_32 = ctx.cfg.strict_range_check;
         let strict_range_check_64 = ctx.cfg.debug_mode || !ctx.cfg.strict_range_check;
 
-        match (&*self.rc, &*x.rc) {
+        let valid = match (&mut *self.rc.borrow_mut(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                if strict_range_check_32 {
-                    if is_i32_overflow_shr(*a, *b) {
-                        panic_i32_overflow!((*a as i128) >> (*b as u32));
-                    }
+                if strict_range_check_32 && is_i32_overflow_shr(*a, *b) {
+                    panic_i32_overflow!((*a as i128) >> (*b as u32));
                 }
-                if strict_range_check_64 {
-                    if is_i64_overflow_shr(*a, *b) {
-                        panic_i64_overflow!((*a as i128) >> (*b as u32));
-                    }
+                if strict_range_check_64 && is_i64_overflow_shr(*a, *b) {
+                    panic_i64_overflow!((*a as i128) >> (*b as u32));
                 }
-                let a: &mut i64 = get_ref_mut(a);
                 *a >>= *b as usize;
-                self
+                true
             }
-            _ => panic_unsupported_bin_op!(">>", self.type_str(), x.type_str()),
+            _ => false,
+        };
+        if !valid {
+            panic_unsupported_bin_op!(">>", self.type_str(), x.type_str())
         }
+        self
     }
 
     pub fn bin_aug_bit_and(&mut self, x: &Self) -> &mut Self {
-        match (&*self.rc, &*x.rc) {
+        let valid = match (&mut *self.rc.borrow_mut(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                let a: &mut i64 = get_ref_mut(a);
                 *a &= *b as i64;
-                self
+                true
             }
-            _ => panic_unsupported_bin_op!("&", self.type_str(), x.type_str()),
+            _ => false,
+        };
+        if !valid {
+            panic_unsupported_bin_op!("^", self.type_str(), x.type_str())
         }
+        self
     }
 
     pub fn bin_aug_bit_xor(&mut self, x: &Self) -> &mut Self {
-        match (&*self.rc, &*x.rc) {
+        let valid = match (&mut *self.rc.borrow_mut(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                let a: &mut i64 = get_ref_mut(a);
                 *a ^= *b as i64;
-                self
+                true
             }
-            _ => panic_unsupported_bin_op!("^", self.type_str(), x.type_str()),
+            _ => false,
+        };
+        if !valid {
+            panic_unsupported_bin_op!("^", self.type_str(), x.type_str())
         }
+        self
     }
 
     pub fn bin_aug_bit_or(&mut self, x: &Self) -> &mut Self {
-        match (&*self.rc, &*x.rc) {
+        let valid = match (&mut *self.rc.borrow_mut(), &*x.rc.borrow()) {
             (Value::int_value(a), Value::int_value(b)) => {
-                let a: &mut i64 = get_ref_mut(a);
                 *a |= *b as i64;
-                self
+                true
             }
-            _ => {
-                if self.is_list_or_config() || x.is_list_or_config() {
-                    self.union(x, true, false, true, true);
-                    return self;
-                }
+            _ => false,
+        };
+        if !valid {
+            if self.is_list_or_config() || x.is_list_or_config() {
+                self.union(x, true, false, true, true);
+            } else {
                 panic_unsupported_bin_op!("|", self.type_str(), x.type_str());
             }
         }
+        self
     }
 
     /// Binary aug union a | b

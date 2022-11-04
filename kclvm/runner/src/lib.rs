@@ -1,12 +1,15 @@
-use std::{path::Path, time::SystemTime};
+use std::{collections::HashMap, path::Path, time::SystemTime};
 
 use assembler::KclvmLibAssembler;
 use command::Command;
 use kclvm::ValueRef;
-use kclvm_ast::ast::Program;
+use kclvm_ast::{
+    ast::{Module, Program},
+    MAIN_PKG,
+};
 use kclvm_parser::load_program;
+use kclvm_query::apply_overrides;
 use kclvm_sema::resolver::resolve_program;
-use kclvm_tools::query::apply_overrides;
 pub use runner::ExecProgramArgs;
 use runner::{ExecProgramResult, KclvmRunner, KclvmRunnerOptions};
 use tempfile::tempdir;
@@ -69,7 +72,7 @@ pub fn exec_program(
     let work_dir = args.work_dir.clone().unwrap_or_default();
 
     // join work_path with k_file_path
-    for (_, file) in k_files.into_iter().enumerate() {
+    for (_, file) in k_files.iter().enumerate() {
         match Path::new(&work_dir).join(file).to_str() {
             Some(str) => kcl_paths.push(String::from(str)),
             None => (),
@@ -78,14 +81,14 @@ pub fn exec_program(
 
     let kcl_paths_str = kcl_paths.iter().map(|s| s.as_str()).collect::<Vec<&str>>();
 
-    let mut program = load_program(&kcl_paths_str.as_slice(), Some(opts))?;
+    let mut program = load_program(kcl_paths_str.as_slice(), Some(opts))?;
 
     if let Err(err) = apply_overrides(&mut program, &args.overrides, &[], args.print_override_ast) {
         return Err(err.to_string());
     }
 
     let start_time = SystemTime::now();
-    let exec_result = execute(program, plugin_agent, &args);
+    let exec_result = execute(program, plugin_agent, args);
     let escape_time = match SystemTime::now().duration_since(start_time) {
         Ok(dur) => dur.as_secs_f32(),
         Err(err) => return Err(err.to_string()),
@@ -103,11 +106,6 @@ pub fn exec_program(
         }
     };
     let kcl_val = ValueRef::from_json(&json_result).unwrap();
-    if let Some(val) = kcl_val.get_by_key("__kcl_PanicInfo__") {
-        if val.is_truthy() {
-            return Err(json_result);
-        }
-    }
     let (json_result, yaml_result) = kcl_val.plan();
     result.json_result = json_result;
     if !args.disable_yaml_result {
@@ -205,6 +203,27 @@ pub fn execute(
     result
 }
 
+/// `execute_module` can directly execute the ast `Module`.
+/// `execute_module` constructs `Program` with default pkg name `MAIN_PKG`,
+/// and calls method `execute` with default `plugin_agent` and `ExecProgramArgs`.
+/// For more information, see doc above method `execute`.
+pub fn execute_module(mut m: Module) -> Result<String, String> {
+    m.pkg = MAIN_PKG.to_string();
+
+    let mut pkgs = HashMap::new();
+    pkgs.insert(MAIN_PKG.to_string(), vec![m]);
+
+    let prog = Program {
+        root: MAIN_PKG.to_string(),
+        main: MAIN_PKG.to_string(),
+        pkgs,
+        cmd_args: vec![],
+        cmd_overrides: vec![],
+    };
+
+    execute(prog, 0, &ExecProgramArgs::default())
+}
+
 /// Clean all the tmp files generated during lib generating and linking.
 #[inline]
 fn clean_tmp_files(temp_entry_file: &String, lib_suffix: &String) {
@@ -215,7 +234,7 @@ fn clean_tmp_files(temp_entry_file: &String, lib_suffix: &String) {
 #[inline]
 fn remove_file(file: &str) {
     if Path::new(&file).exists() {
-        std::fs::remove_file(&file).expect(&format!("{} not found", file));
+        std::fs::remove_file(&file).unwrap_or_else(|_| panic!("{} not found", file));
     }
 }
 
@@ -224,6 +243,6 @@ fn temp_file(dir: &str) -> String {
     let timestamp = chrono::Local::now().timestamp_nanos();
     let id = std::process::id();
     let file = format!("{}_{}", id, timestamp);
-    std::fs::create_dir_all(dir).expect(&format!("{} not found", dir));
+    std::fs::create_dir_all(dir).unwrap_or_else(|_| panic!("{} not found", dir));
     Path::new(dir).join(file).to_str().unwrap().to_string()
 }

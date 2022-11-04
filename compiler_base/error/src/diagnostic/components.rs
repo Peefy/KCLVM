@@ -351,13 +351,16 @@ impl Component<DiagnosticStyle> for CodeSnippet {
                     )) {
                     Some(sf) => {
                         for line in affected_lines.lines {
-                            let line_index = line.line_index.to_string();
+                            // The line number shown in diagnostic should begin from 1.
+                            // The `line.line_index` get from `SourceMap` begin from 0.
+                            // So, the line number shown in diagnostic should be equal to line.line_index + 1.
+                            let line_index = (line.line_index + 1).to_string();
                             let indent = line_index.len() + 1;
                             IndentWithPrefix::new(line_index, indent, Some(DiagnosticStyle::Url))
                                 .format(sb, errs);
                             IndentWithPrefix::default().format(sb, errs);
                             if let Some(line) = sf.get_line(line.line_index) {
-                                sb.appendl(&line.to_string(), None);
+                                sb.appendl(&line, None);
                             } else {
                                 errs.push(ComponentFormatError::new(
                                     "CodeSnippet",
@@ -373,7 +376,9 @@ impl Component<DiagnosticStyle> for CodeSnippet {
                                 Some(DiagnosticStyle::NeedFix),
                             )
                             .format(sb, errs);
-                            sb.appendl("\n", None);
+                            // The newline "\n" should not be included at the end of the `CodeSnippet`.
+                            // The user can choose whether to add a newline at the end of `CodeSnippet` instead of
+                            // having the newline built in at the end of `CodeSnippet`.
                         }
                     }
                     None => errs.push(ComponentFormatError::new(
