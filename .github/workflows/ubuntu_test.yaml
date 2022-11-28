@@ -2,6 +2,7 @@ name: build-and-test-ubuntu
 on: ["push", "pull_request"]
 jobs:
   build-and-test:
+    # Ref: https://github.com/actions/runner-images/tree/main/images/linux
     name: Test
     runs-on: ubuntu-latest
     container: 
@@ -16,8 +17,8 @@ jobs:
         shell: bash
       - name: Grammar test
         run: |
-          chmod +x ./internal/kclvm_py/scripts/test_grammar.sh
-          ./internal/kclvm_py/scripts/test_grammar.sh
+          chmod +x ./internal/scripts/test_grammar.sh
+          ./internal/scripts/test_grammar.sh
         shell: bash
       - name: Delete rust cargo
         run: rm -rf /root/.cargo/bin

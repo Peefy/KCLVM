@@ -68,6 +68,9 @@ impl crate::Context {
         if self.cfg.list_option_mode {
             self.output.return_value =
                 crate::ValueRef::str(self.list_option_help().as_str()).into_raw();
+        // If there is a custom manifests, output them.
+        } else if let Some(output) = &self.buffer.custom_manifests_output {
+            self.output.return_value = crate::ValueRef::str(output.as_str()).into_raw();
         }
 
         self.output.return_value
@@ -181,7 +184,7 @@ impl crate::Context {
         // check dup
         for i in 0..self.option_helps.len() {
             if self.option_helps[i].name == name {
-                if typ.is_empty() && !required && default_value == None && help.is_empty() {
+                if typ.is_empty() && !required && default_value.is_none() && help.is_empty() {
                     return;
                 }
 
@@ -192,7 +195,7 @@ impl crate::Context {
                 if !self.option_helps[i].required {
                     self.option_helps[i].required = required;
                 }
-                if self.option_helps[i].default_value == None {
+                if self.option_helps[i].default_value.is_none() {
                     self.option_helps[i].default_value = default_value;
                 }
                 if self.option_helps[i].help.is_empty() {

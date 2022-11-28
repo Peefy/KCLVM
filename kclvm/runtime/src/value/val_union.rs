@@ -11,6 +11,10 @@ impl ValueRef {
         should_idempotent_check: bool,
         should_config_resolve: bool,
     ) -> Self {
+        if self.is_same_ref(x) {
+            return self.clone();
+        }
+
         let union_fn = |obj: &mut DictValue, delta: &DictValue| {
             // Update attribute map
             for (k, v) in &delta.ops {
@@ -42,14 +46,13 @@ impl ValueRef {
                             {
                                 panic!("conflicting values on the attribute '{}' between {:?} and {:?}", k, self, x);
                             }
-                            let value = obj.values.get_mut(k).unwrap().union(
+                            obj.values.get_mut(k).unwrap().union(
                                 v,
                                 false,
                                 should_list_override,
                                 should_idempotent_check,
                                 should_config_resolve,
                             );
-                            obj.values.insert(k.clone(), value);
                         }
                         ConfigEntryOperationKind::Override => {
                             if index < 0 {
@@ -67,20 +70,21 @@ impl ValueRef {
                             }
                         }
                         ConfigEntryOperationKind::Insert => {
-                            let value = v.deep_copy();
                             let origin_value = obj.values.get_mut(k).unwrap();
                             if origin_value.is_none_or_undefined() {
                                 let list = ValueRef::list(None);
                                 obj.values.insert(k.to_string(), list);
                             }
                             let origin_value = obj.values.get_mut(k).unwrap();
-                            match (
-                                &mut *origin_value.rc.borrow_mut(),
-                                &mut *value.rc.borrow_mut(),
-                            ) {
+                            if origin_value.is_same_ref(v) {
+                                continue;
+                            }
+                            match (&mut *origin_value.rc.borrow_mut(), &*v.rc.borrow()) {
                                 (Value::list_value(origin_value), Value::list_value(value)) => {
                                     if index == -1 {
-                                        origin_value.values.append(&mut value.clone().values);
+                                        for elem in value.values.iter() {
+                                            origin_value.values.push(elem.clone());
+                                        }
                                     } else if index >= 0 {
                                         let mut insert_index = index;
                                         for v in &value.values {
@@ -183,8 +187,7 @@ impl ValueRef {
         }
         self.clone()
     }
-
-    pub fn union(
+    fn union(
         &mut self,
         x: &Self,
         or_mode: bool,
@@ -207,13 +210,12 @@ impl ValueRef {
                 should_config_resolve,
             );
         } else if or_mode {
-            match (&mut *self.rc.borrow_mut(), &*x.rc.borrow()) {
-                (Value::int_value(a), Value::int_value(b)) => {
-                    *a |= *b;
-                    return self.clone();
-                }
-                _ => {}
-            }
+            if let (Value::int_value(a), Value::int_value(b)) =
+                (&mut *self.rc.borrow_mut(), &*x.rc.borrow())
+            {
+                *a |= *b;
+                return self.clone();
+            };
             panic!(
                 "unsupported operand type(s) for |: '{:?}' and '{:?}'",
                 self.type_str(),
@@ -223,6 +225,23 @@ impl ValueRef {
             *self = x.clone();
         }
         self.clone()
+    }
+
+    pub fn union_entry(
+        &mut self,
+        x: &Self,
+        or_mode: bool,
+        should_list_override: bool,
+        should_idempotent_check: bool,
+        should_config_resolve: bool,
+    ) -> Self {
+        self.union(
+            x,
+            or_mode,
+            should_list_override,
+            should_idempotent_check,
+            should_config_resolve,
+        )
     }
 }
 
@@ -365,6 +384,100 @@ mod test_value_union {
                 let result_op = result_dict.ops.get(key).unwrap();
                 let result_index = result_dict.insert_indexs.get(key).unwrap();
                 assert_eq!(result_val.clone(), ValueRef::list_int(val.as_slice()));
+                assert_eq!(*result_op, op);
+                assert_eq!(*result_index, index);
+            }
+        }
+    }
+
+    #[test]
+    fn test_dict_union_same_ref() {
+        let cases = [
+            (
+                vec![("key1", "value", ConfigEntryOperationKind::Union, -1)],
+                vec![("key1", "value", ConfigEntryOperationKind::Union, -1)],
+                vec![("key2", "value", ConfigEntryOperationKind::Union, -1)],
+                vec![
+                    ("key1", "value", ConfigEntryOperationKind::Union, -1),
+                    ("key2", "value", ConfigEntryOperationKind::Union, -1),
+                ],
+            ),
+            (
+                vec![("key1", "value1", ConfigEntryOperationKind::Override, -1)],
+                vec![("key1", "value2", ConfigEntryOperationKind::Override, -1)],
+                vec![("key2", "value", ConfigEntryOperationKind::Override, -1)],
+                vec![
+                    ("key1", "value2", ConfigEntryOperationKind::Override, -1),
+                    ("key2", "value", ConfigEntryOperationKind::Override, -1),
+                ],
+            ),
+            (
+                vec![("key1", "value1", ConfigEntryOperationKind::Union, -1)],
+                vec![("key1", "value2", ConfigEntryOperationKind::Override, -1)],
+                vec![("key2", "value", ConfigEntryOperationKind::Override, -1)],
+                vec![
+                    ("key1", "value2", ConfigEntryOperationKind::Override, -1),
+                    ("key2", "value", ConfigEntryOperationKind::Override, -1),
+                ],
+            ),
+            (
+                vec![
+                    ("key1", "value1", ConfigEntryOperationKind::Union, -1),
+                    ("key2", "value2", ConfigEntryOperationKind::Union, -1),
+                ],
+                vec![
+                    (
+                        "key1",
+                        "override_value1",
+                        ConfigEntryOperationKind::Override,
+                        -1,
+                    ),
+                    (
+                        "key2",
+                        "override_value2",
+                        ConfigEntryOperationKind::Override,
+                        -1,
+                    ),
+                ],
+                vec![("key3", "value", ConfigEntryOperationKind::Union, -1)],
+                vec![
+                    (
+                        "key1",
+                        "override_value1",
+                        ConfigEntryOperationKind::Override,
+                        -1,
+                    ),
+                    (
+                        "key2",
+                        "override_value2",
+                        ConfigEntryOperationKind::Override,
+                        -1,
+                    ),
+                    ("key3", "value", ConfigEntryOperationKind::Union, -1),
+                ],
+            ),
+        ];
+        for (left_entries, right_entries, both_entries, expected) in cases {
+            let mut left_value = ValueRef::dict(None);
+            let mut right_value = ValueRef::dict(None);
+            for (key, val, op, index) in left_entries {
+                left_value.dict_update_entry(key, &ValueRef::str(val), &op, &index);
+            }
+            for (key, val, op, index) in right_entries {
+                right_value.dict_update_entry(key, &ValueRef::str(val), &op, &index);
+            }
+            for (key, val, op, index) in both_entries {
+                let both_val = ValueRef::str(val);
+                left_value.dict_update_entry(key, &both_val, &op, &index);
+                left_value.dict_update_entry(key, &both_val, &op, &index);
+            }
+            let result = left_value.bin_bit_or(&right_value);
+            for (key, val, op, index) in expected {
+                let result_dict = result.as_dict_ref();
+                let result_val = result_dict.values.get(key).unwrap().as_str();
+                let result_op = result_dict.ops.get(key).unwrap();
+                let result_index = result_dict.insert_indexs.get(key).unwrap();
+                assert_eq!(result_val, val);
                 assert_eq!(*result_op, op);
                 assert_eq!(*result_index, index);
             }

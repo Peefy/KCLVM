@@ -194,6 +194,11 @@ impl Default for ValueRef {
 }
 
 impl ValueRef {
+    // Returns whether self and x refer to the same Value
+    pub fn is_same_ref(&self, x: &Self) -> bool {
+        std::ptr::eq(&*self.rc.borrow(), &*x.rc.borrow())
+    }
+
     pub fn into_raw(self) -> *mut Self {
         new_mut_ptr(self)
     }
@@ -320,12 +325,15 @@ pub struct ContextConfig {
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct ContextBuffer {
     pub kclvm_context_invoke_result: String,
+    /// Custom manifest output string.
+    pub custom_manifests_output: Option<String>,
 }
 
 impl Default for ContextBuffer {
     fn default() -> Self {
         Self {
             kclvm_context_invoke_result: "\0".to_string(),
+            custom_manifests_output: None,
         }
     }
 }

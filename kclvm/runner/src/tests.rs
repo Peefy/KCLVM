@@ -2,13 +2,13 @@ use crate::assembler::clean_path;
 use crate::assembler::KclvmAssembler;
 use crate::assembler::KclvmLibAssembler;
 use crate::assembler::LibAssembler;
+use crate::exec_program;
 use crate::temp_file;
-use crate::Command;
 use crate::{execute, runner::ExecProgramArgs};
 use anyhow::Context;
 use anyhow::Result;
 use kclvm_ast::ast::{Module, Program};
-use kclvm_compiler::codegen::llvm::LL_FILE_SUFFIX;
+use kclvm_compiler::codegen::llvm::OBJECT_FILE_SUFFIX;
 use kclvm_config::settings::load_file;
 use kclvm_parser::load_program;
 use kclvm_sema::resolver::resolve_program;
@@ -25,6 +25,7 @@ use tempfile::tempdir;
 use walkdir::WalkDir;
 
 const EXEC_DATA_PATH: &str = "src/exec_data/";
+const CUSTOM_MANIFESTS_DATA_PATH: &str = "src/custom_manifests_data/";
 const TEST_CASES: &[&str; 5] = &[
     "init_check_order_0",
     "init_check_order_1",
@@ -33,13 +34,14 @@ const TEST_CASES: &[&str; 5] = &[
     "multi_vars_0",
 ];
 
-const MULTI_FILE_TEST_CASES: &[&str; 6] = &[
+const MULTI_FILE_TEST_CASES: &[&str; 7] = &[
     "multi_file_compilation/no_kcl_mod_file",
     "multi_file_compilation/relative_import",
     "multi_file_compilation/relative_import_as",
     "multi_file_compilation/import_abs_path/app-main",
     "multi_file_compilation/import_regular_module",
     "multi_file_compilation/import_regular_module_as",
+    "../../../../test/konfig/base/examples/job-example/dev",
 ];
 
 const EXEC_PROG_ARGS_TEST_CASE: &[&str; 1] = &["exec_prog_args/default.json"];
@@ -152,7 +154,7 @@ fn gen_libs_for_test(entry_file: &str, test_kcl_case_path: &str) {
         &parse_program(test_kcl_case_path),
         &assembler,
         PathBuf::from(entry_file).to_str().unwrap(),
-        Command::get_lib_suffix(),
+        OBJECT_FILE_SUFFIX.to_string(),
     );
 
     let lib_paths = assembler.gen_libs();
@@ -164,7 +166,7 @@ fn gen_libs_for_test(entry_file: &str, test_kcl_case_path: &str) {
     }
 
     let tmp_main_lib_path =
-        fs::canonicalize(format!("{}{}", entry_file, Command::get_lib_suffix())).unwrap();
+        fs::canonicalize(format!("{}{}", entry_file, OBJECT_FILE_SUFFIX)).unwrap();
     assert_eq!(tmp_main_lib_path.exists(), true);
 
     clean_path(tmp_main_lib_path.to_str().unwrap());
@@ -189,16 +191,14 @@ fn assemble_lib_for_test(
     let scope = resolve_program(&mut program);
 
     // tmp file
-    let temp_entry_file_path = &format!("{}{}", entry_file, LL_FILE_SUFFIX);
-    let temp_entry_file_lib = &format!("{}.{}", entry_file, Command::get_lib_suffix());
+    let temp_entry_file_path = &format!("{}{}", entry_file, OBJECT_FILE_SUFFIX);
 
-    // assemble libs
-    assembler.assemble_lib(
+    // Assemble object files
+    assembler.assemble(
         &program,
         scope.import_names,
         entry_file,
         temp_entry_file_path,
-        temp_entry_file_lib,
     )
 }
 
@@ -301,7 +301,7 @@ fn test_clean_path_for_genlibs() {
     create_dir_all(tmp_file_path).unwrap();
 
     let file_name = &format!("{}/{}", tmp_file_path, "test");
-    let file_suffix = ".ll";
+    let file_suffix = ".o";
 
     File::create(file_name).unwrap();
     let path = std::path::Path::new(file_name);
@@ -310,8 +310,8 @@ fn test_clean_path_for_genlibs() {
     assembler.clean_path_for_genlibs(file_name, file_suffix);
     assert_eq!(path.exists(), false);
 
-    let test1 = &format!("{}{}", file_name, ".test1.ll");
-    let test2 = &format!("{}{}", file_name, ".test2.ll");
+    let test1 = &format!("{}{}", file_name, ".test1.o");
+    let test2 = &format!("{}{}", file_name, ".test2.o");
     File::create(test1).unwrap();
     File::create(test2).unwrap();
     let path1 = std::path::Path::new(test1);
@@ -372,11 +372,16 @@ fn test_exec_file() {
     std::panic::set_hook(prev_hook);
 }
 
+fn test_custom_manifests_output() {
+    exec_with_result_at(CUSTOM_MANIFESTS_DATA_PATH)
+}
+
 #[test]
 fn test_exec() {
     test_exec_file();
     test_kclvm_runner_execute();
     test_kclvm_runner_execute_timeout();
+    test_custom_manifests_output();
 }
 
 fn exec(file: &str) -> Result<String, String> {
@@ -388,6 +393,23 @@ fn exec(file: &str) -> Result<String, String> {
     let program = load_program(&[file], Some(opts)).unwrap();
     // Resolve ATS, generate libs, link libs and execute.
     execute(program, plugin_agent, &args)
+}
+
+/// Run all kcl files at path and compare the exec result with the expect output.
+fn exec_with_result_at(path: &str) {
+    let kcl_files = get_files(path, false, true, ".k");
+    let output_files = get_files(path, false, true, ".stdout.golden");
+    for (kcl_file, output_file) in kcl_files.iter().zip(&output_files) {
+        let mut args = ExecProgramArgs::default();
+        args.k_filename_list.push(kcl_file.to_string());
+        let result = exec_program(&args, 0).unwrap();
+        let expected = std::fs::read_to_string(output_file)
+            .unwrap()
+            .strip_suffix("\n")
+            .unwrap()
+            .to_string();
+        assert_eq!(result.yaml_result, expected);
+    }
 }
 
 /// Get kcl files from path.

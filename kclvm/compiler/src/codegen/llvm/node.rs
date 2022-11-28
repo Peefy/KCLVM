@@ -2043,10 +2043,12 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
 
     fn walk_lambda_expr(&self, lambda_expr: &'ctx ast::LambdaExpr) -> Self::Result {
         check_backtrack_stop!(self);
+        let pkgpath = &self.current_pkgpath();
         let is_in_schema = self.schema_stack.borrow().len() > 0;
         let func_before_block = self.append_block("");
         self.br(func_before_block);
-        let function = self.add_function(value::LAMBDA_NAME);
+        // Use "pkgpath"+"kclvm_lambda" to name 'function' to prevent conflicts between lambdas with the same name in different packages
+        let function = self.add_function(&format!("{}.{}", pkgpath, value::LAMBDA_NAME));
         // Enter the function
         self.push_function(function);
         self.lambda_stack.borrow_mut().push(true);
@@ -2333,9 +2335,18 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                         let value = right_value.expect(kcl_error::INTERNAL_ERROR_MSG);
                         // If variable exists in the scope and update it, if not, add it to the scope.
                         if !self.store_variable_in_current_scope(name, value) {
+                            let cur_bb = self.builder.get_insert_block().unwrap();
+                            let lambda_func = cur_bb.get_parent().unwrap();
+                            let entry_bb = lambda_func.get_first_basic_block().unwrap();
+                            match entry_bb.get_first_instruction() {
+                                Some(inst) => self.builder.position_before(&inst),
+                                None => self.builder.position_at_end(entry_bb),
+                            };
                             let var = self.builder.build_alloca(tpe, name);
-                            self.builder.build_store(var, value);
+                            let undefined_val = self.undefined_value();
+                            self.builder.build_store(var, undefined_val);
                             self.add_variable(name, var);
+                            self.builder.position_at_end(cur_bb);
                             self.store_variable(name, value);
                         }
                     } else {
