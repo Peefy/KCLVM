@@ -35,5 +35,4 @@ pub fn pre_process_program(program: &mut ast::Program) {
             fix_config_expr_nest_attr(module);
         }
     }
-    merge_program(program);
 }

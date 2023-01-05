@@ -22,7 +22,7 @@ use indexmap::IndexMap;
 use std::{cell::RefCell, rc::Rc};
 
 use crate::lint::{CombinedLintPass, Linter};
-use crate::pre_process::pre_process_program;
+use crate::pre_process::{merge_program, pre_process_program};
 use crate::resolver::scope::ScopeObject;
 use crate::resolver::ty_alias::process_program_type_alias;
 use crate::{resolver::scope::Scope, ty::SchemaType};
@@ -151,6 +151,7 @@ pub fn resolve_program(program: &mut Program) -> ProgramScope {
     resolver.resolve_import();
     let scope = resolver.check_and_lint(kclvm_ast::MAIN_PKG);
     let type_alias_mapping = resolver.ctx.type_alias_mapping.clone();
+    merge_program(program);
     process_program_type_alias(program, type_alias_mapping);
     scope
 }
