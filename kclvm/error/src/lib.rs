@@ -300,7 +300,7 @@ impl ToString for ParseError {
     fn to_string(&self) -> String {
         match self {
             ParseError::UnexpectedToken { expected, got, .. } => {
-                format!("unexpected one of {expected:?} got {got}")
+                format!("expected one of {expected:?} got {got}")
             }
             ParseError::Message { message, .. } => message.to_string(),
         }
@@ -313,15 +313,11 @@ impl SessionDiagnostic for ParseError {
         diag.append_component(Box::new(Label::Error(E1001.code.to_string())));
         diag.append_component(Box::new(": invalid syntax".to_string()));
         match self {
-            ParseError::UnexpectedToken {
-                expected,
-                got,
-                span,
-            } => {
+            ParseError::UnexpectedToken { span, .. } => {
                 let code_snippet = CodeSnippet::new(span, Arc::clone(&sess.sm));
                 diag.append_component(Box::new(code_snippet));
                 diag.append_component(Box::new(format!(
-                    " expected one of {expected:?} got {got}\n"
+                    "unexpected one of {expected:?} got {got}\n"
                 )));
                 Ok(diag)
             }
