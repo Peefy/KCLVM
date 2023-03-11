@@ -1,26 +1,23 @@
 [package]
 name = "kclvm-capi"
-version = "0.1.0"
+version = "0.4.5"
 edition = "2021"
-
-[lib]
-crate-type = ["cdylib"]
-path = "src/lib.rs"
-name = "kclvm_capi"
 
 [dependencies]
 protobuf = "3.1.0"
 serde_json = "1.0"
 serde_yaml = "0.9.2"
 protobuf-json-mapping = "3.1.0"
+compiler_base_session = {path = "../../compiler_base/session", version = "0.0.12"}
 serde = { version = "1", features = ["derive"] }
 
-kclvm-runner = {path = "../runner", version = "0.1.0"}
-kclvm-parser = {path = "../parser", version = "0.1.0"}
-kclvm-ast = {path = "../ast", version = "0.1.0"}
-kclvm-runtime = {path = "../runtime", version = "0.1.0"}
-kclvm-tools = {path = "../tools", version = "0.1.0" }
-kclvm-query = {path = "../query", version = "0.1.0"}
+kclvm-runner = {path = "../runner", version = "0.4.5"}
+kclvm-error = {path = "../error", version = "0.4.5"}
+kclvm-parser = {path = "../parser", version = "0.4.5"}
+kclvm-ast = {path = "../ast", version = "0.4.5"}
+kclvm-runtime = {path = "../runtime", version = "0.4.5"}
+kclvm-tools = {path = "../tools", version = "0.4.5" }
+kclvm-query = {path = "../query", version = "0.4.5"}
 
 [dev-dependencies]
 criterion = "0.3"

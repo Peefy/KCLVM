@@ -1,18 +1,7 @@
 [package]
 name = "kclvm-runtime"
-version = "0.1.0"
+version = "0.4.5"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[lib]
-crate-type = [
-    "staticlib",
-    "cdylib",
-    "rlib"
-]
-name = "kclvm"
-path = "src/lib.rs"
 
 [dependencies]
 kclvm_runtime_internal_macros = { path = "./internal_macros" }

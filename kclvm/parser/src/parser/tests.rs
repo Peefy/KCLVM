@@ -2,25 +2,31 @@ use crate::lexer::parse_token_streams;
 use crate::parse_file;
 use crate::parser::Parser;
 use crate::session::ParseSession;
+use compiler_base_span::span::new_byte_pos;
+use compiler_base_span::{FilePathMapping, SourceMap};
 use expect_test::{expect, Expect};
-use kclvm_ast::ast::*;
-use kclvm_span::{create_session_globals_then, BytePos, FilePathMapping, SourceMap};
-use rustc_span::Pos;
+use kclvm_span::create_session_globals_then;
+use regex::Regex;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 fn check_parsing_expr(src: &str, expect: Expect) {
     let sm = SourceMap::new(FilePathMapping::empty());
-    sm.new_source_file(PathBuf::from("").into(), src.to_string());
+    let sf = sm.new_source_file(PathBuf::from("").into(), src.to_string());
     let sess = &ParseSession::with_source_map(Arc::new(sm));
 
-    create_session_globals_then(|| {
-        let stream = parse_token_streams(sess, src, BytePos::from_u32(0));
-        let mut parser = Parser::new(sess, stream);
-        let expr = parser.parse_expr();
-        let actual = format!("{:?}\n", expr);
-        expect.assert_eq(&actual)
-    });
+    match sf.src.as_ref() {
+        Some(src_from_sf) => {
+            create_session_globals_then(|| {
+                let stream = parse_token_streams(sess, src_from_sf.as_str(), new_byte_pos(0));
+                let mut parser = Parser::new(sess, stream);
+                let expr = parser.parse_expr();
+                let actual = format!("{:?}\n", expr);
+                expect.assert_eq(&actual)
+            });
+        }
+        None => todo!(),
+    };
 }
 
 fn check_parsing_file_ast_json(filename: &str, src: &str, expect: Expect) {
@@ -36,7 +42,7 @@ fn check_parsing_type(src: &str, expect: Expect) {
     let sess = &ParseSession::with_source_map(Arc::new(sm));
 
     create_session_globals_then(|| {
-        let stream = parse_token_streams(sess, src, BytePos::from_u32(0));
+        let stream = parse_token_streams(sess, src, new_byte_pos(0));
         let mut parser = Parser::new(sess, stream);
         let typ = parser.parse_type_annotation();
         let actual = format!("{:?}\n", typ);
@@ -50,7 +56,7 @@ fn check_type_str(src: &str, expect: Expect) {
     let sess = &ParseSession::with_source_map(Arc::new(sm));
 
     create_session_globals_then(|| {
-        let stream = parse_token_streams(sess, src, BytePos::from_u32(0));
+        let stream = parse_token_streams(sess, src, new_byte_pos(0));
         let mut parser = Parser::new(sess, stream);
         let typ = parser.parse_type_annotation();
         let actual = typ.node.to_string();
@@ -58,24 +64,10 @@ fn check_type_str(src: &str, expect: Expect) {
     });
 }
 
-fn check_type_stmt(src: &str, expect: Expect) {
-    let sm = SourceMap::new(FilePathMapping::empty());
-    sm.new_source_file(PathBuf::from("").into(), src.to_string());
-    let sess = &ParseSession::with_source_map(Arc::new(sm));
-
-    create_session_globals_then(|| {
-        let stream = parse_token_streams(sess, src, BytePos::from_u32(0));
-        let mut parser = Parser::new(sess, stream);
-        let stmt = parser.parse_stmt().unwrap();
-        let actual = format!("{:?}\n", stmt);
-        expect.assert_eq(&actual)
-    });
-}
-
 fn check_parsing_module(filename: &str, src: &str, expect: &str) {
     let m = crate::parse_file(filename, Some(src.to_string())).unwrap();
     let actual = format!("{}\n", serde_json::ser::to_string(&m).unwrap());
-    assert_eq!(actual, expect);
+    assert_eq!(actual.trim(), expect.trim());
 }
 
 #[test]
@@ -681,7 +673,7 @@ fn lambda_expr_3() {
     _a
 }"####,
         expect![[r#"
-        Node { node: Lambda(LambdaExpr { args: None, return_type_str: None, body: [Node { node: If(IfStmt { body: [Node { node: Assign(AssignStmt { targets: [Node { node: Identifier { names: ["_a"], pkgpath: "", ctx: Store }, filename: "", line: 3, column: 8, end_line: 3, end_column: 10 }], value: Node { node: NumberLit(NumberLit { binary_suffix: None, value: Int(1) }), filename: "", line: 3, column: 13, end_line: 3, end_column: 14 }, type_annotation: None, ty: None }), filename: "", line: 3, column: 8, end_line: 4, end_column: 0 }], cond: Node { node: NameConstantLit(NameConstantLit { value: True }), filename: "", line: 2, column: 7, end_line: 2, end_column: 11 }, orelse: [Node { node: Assign(AssignStmt { targets: [Node { node: Identifier { names: ["_a"], pkgpath: "", ctx: Store }, filename: "", line: 5, column: 8, end_line: 5, end_column: 10 }], value: Node { node: NumberLit(NumberLit { binary_suffix: None, value: Int(2) }), filename: "", line: 5, column: 13, end_line: 5, end_column: 14 }, type_annotation: None, ty: None }), filename: "", line: 5, column: 8, end_line: 6, end_column: 0 }] }), filename: "", line: 2, column: 4, end_line: 6, end_column: 4 }, Node { node: Expr(ExprStmt { exprs: [Node { node: Identifier(Identifier { names: ["_a"], pkgpath: "", ctx: Load }), filename: "", line: 6, column: 4, end_line: 6, end_column: 6 }] }), filename: "", line: 6, column: 4, end_line: 6, end_column: 6 }], return_ty: None }), filename: "", line: 1, column: 0, end_line: 7, end_column: 1 }
+        Node { node: Lambda(LambdaExpr { args: None, return_type_str: None, body: [Node { node: If(IfStmt { body: [Node { node: Assign(AssignStmt { targets: [Node { node: Identifier { names: ["_a"], pkgpath: "", ctx: Store }, filename: "", line: 3, column: 8, end_line: 3, end_column: 10 }], value: Node { node: NumberLit(NumberLit { binary_suffix: None, value: Int(1) }), filename: "", line: 3, column: 13, end_line: 3, end_column: 14 }, type_annotation: None, ty: None }), filename: "", line: 3, column: 8, end_line: 3, end_column: 14 }], cond: Node { node: NameConstantLit(NameConstantLit { value: True }), filename: "", line: 2, column: 7, end_line: 2, end_column: 11 }, orelse: [Node { node: Assign(AssignStmt { targets: [Node { node: Identifier { names: ["_a"], pkgpath: "", ctx: Store }, filename: "", line: 5, column: 8, end_line: 5, end_column: 10 }], value: Node { node: NumberLit(NumberLit { binary_suffix: None, value: Int(2) }), filename: "", line: 5, column: 13, end_line: 5, end_column: 14 }, type_annotation: None, ty: None }), filename: "", line: 5, column: 8, end_line: 5, end_column: 14 }] }), filename: "", line: 2, column: 4, end_line: 6, end_column: 4 }, Node { node: Expr(ExprStmt { exprs: [Node { node: Identifier(Identifier { names: ["_a"], pkgpath: "", ctx: Load }), filename: "", line: 6, column: 4, end_line: 6, end_column: 6 }] }), filename: "", line: 6, column: 4, end_line: 6, end_column: 6 }], return_ty: None }), filename: "", line: 1, column: 0, end_line: 7, end_column: 1 }
         "#]],
     );
 }
@@ -1065,13 +1057,18 @@ schema TestBool:
 
 #[test]
 fn test_parse_joined_string() {
-    // todo: fix joined_string
-    // check_type_stmt(
-    //     r####"a='${123+200}'"####,
-    //     expect![[r#"
-    //     sss
-    //     "#]],
-    // );
+    check_parsing_expr(
+        r####"'${123+200}'"####,
+        expect![[r#"
+        Node { node: JoinedString(JoinedString { is_long_string: false, values: [Node { node: FormattedValue(FormattedValue { is_long_string: false, value: Node { node: Binary(BinaryExpr { left: Node { node: NumberLit(NumberLit { binary_suffix: None, value: Int(123) }), filename: "", line: 1, column: 3, end_line: 1, end_column: 6 }, op: Bin(Add), right: Node { node: NumberLit(NumberLit { binary_suffix: None, value: Int(200) }), filename: "", line: 1, column: 7, end_line: 1, end_column: 10 } }), filename: "", line: 1, column: 3, end_line: 1, end_column: 10 }, format_spec: None }), filename: "", line: 1, column: 1, end_line: 1, end_column: 1 }], raw_value: "'${123+200}'" }), filename: "", line: 1, column: 0, end_line: 1, end_column: 12 }
+        "#]],
+    );
+    check_parsing_expr(
+        r####"'abc${a+1}cde'"####,
+        expect![[r#"
+        Node { node: JoinedString(JoinedString { is_long_string: false, values: [Node { node: StringLit(StringLit { is_long_string: false, raw_value: "abc", value: "abc" }), filename: "", line: 1, column: 1, end_line: 1, end_column: 1 }, Node { node: FormattedValue(FormattedValue { is_long_string: false, value: Node { node: Binary(BinaryExpr { left: Node { node: Identifier(Identifier { names: ["a"], pkgpath: "", ctx: Load }), filename: "", line: 1, column: 6, end_line: 1, end_column: 7 }, op: Bin(Add), right: Node { node: NumberLit(NumberLit { binary_suffix: None, value: Int(1) }), filename: "", line: 1, column: 8, end_line: 1, end_column: 9 } }), filename: "", line: 1, column: 6, end_line: 1, end_column: 9 }, format_spec: None }), filename: "", line: 1, column: 1, end_line: 1, end_column: 1 }, Node { node: StringLit(StringLit { is_long_string: false, raw_value: "cde", value: "cde" }), filename: "", line: 1, column: 1, end_line: 1, end_column: 1 }], raw_value: "'abc${a+1}cde'" }), filename: "", line: 1, column: 0, end_line: 1, end_column: 14 }
+        "#]],
+    );
 }
 
 #[test]
@@ -1093,6 +1090,7 @@ fn test_parse_file() {
         "testdata/if-02.k",
         "testdata/if-03.k",
         "testdata/type-01.k",
+        "testdata/hello_win.k",
     ];
     for filename in filenames {
         let code = std::fs::read_to_string(&filename).unwrap();
@@ -1234,39 +1232,6 @@ fn expr_with_delim5() {
         "#]],
     );
 }
-// TODO: enable file tests after pos & error added.
-// #[test]
-fn smoke_test_parsing_stmt() {
-    let code = "a=1";
-    let node = Some(Node::dummy_node(Stmt::Assign(AssignStmt {
-        targets: vec![Box::new(Node::dummy_node(Identifier {
-            names: vec!["a".to_string()],
-            pkgpath: "".to_string(),
-            ctx: ExprContext::Store,
-        }))],
-        value: Box::new(Node::dummy_node(Expr::NumberLit(NumberLit {
-            binary_suffix: None,
-            value: NumberLitValue::Int(1),
-        }))),
-        type_annotation: None,
-        ty: None,
-    })));
-
-    create_session_globals_then(move || {
-        let sm = SourceMap::new(FilePathMapping::empty());
-        sm.new_source_file(PathBuf::from("").into(), code.to_string());
-        let sess = &ParseSession::with_source_map(Arc::new(sm));
-
-        let stream = parse_token_streams(sess, code, BytePos::from_u32(0));
-        let mut parser = Parser::new(sess, stream);
-        let stmt = parser.parse_stmt();
-
-        let expect = format!("{:?}\n", node);
-        let got = format!("{:?}\n", stmt);
-
-        assert_eq!(got, expect);
-    });
-}
 
 #[test]
 fn test_parse_file_not_found() {
@@ -1275,7 +1240,11 @@ fn test_parse_file_not_found() {
             panic!("unreachable")
         }
         Err(err_msg) => {
-            assert_eq!(err_msg, "Failed to load KCL file 'The file path is invalid'. Because 'No such file or directory (os error 2)'");
+            assert!(
+                Regex::new(r"^Failed to load KCL file 'The file path is invalid'. Because.*")
+                    .unwrap()
+                    .is_match(&err_msg)
+            );
         }
     }
 }

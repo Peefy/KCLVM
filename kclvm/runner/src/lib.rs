@@ -1,15 +1,18 @@
-use std::{collections::HashMap, path::Path, time::SystemTime};
+use std::{collections::HashMap, path::Path, sync::Arc, time::SystemTime};
 
 use assembler::KclvmLibAssembler;
 use command::Command;
-use kclvm::ValueRef;
+use compiler_base_session::Session;
 use kclvm_ast::{
     ast::{Module, Program},
     MAIN_PKG,
 };
+use kclvm_config::modfile::KCL_MOD_PATH_ENV;
 use kclvm_parser::load_program;
 use kclvm_query::apply_overrides;
+use kclvm_runtime::{PanicInfo, ValueRef};
 use kclvm_sema::resolver::resolve_program;
+use kclvm_utils::path::PathPrefix;
 pub use runner::ExecProgramArgs;
 use runner::{ExecProgramResult, KclvmRunner, KclvmRunnerOptions};
 use tempfile::tempdir;
@@ -52,16 +55,21 @@ pub mod tests;
 ///
 /// ```
 /// use kclvm_runner::{exec_program, ExecProgramArgs};
+/// use std::sync::Arc;
+/// use compiler_base_session::Session;
 ///
+/// // Create sessions
+/// let sess = Arc::new(Session::default());
 /// // Get default args
 /// let mut args = ExecProgramArgs::default();
 /// args.k_filename_list = vec!["./src/test_datas/init_check_order_0/main.k".to_string()];
 ///
 /// // Resolve ast, generate libs, link libs and execute.
 /// // Result is the kcl in json format.
-/// let result = exec_program(&args, 0).unwrap();
+/// let result = exec_program(sess, &args, 0).unwrap();
 /// ```
 pub fn exec_program(
+    sess: Arc<Session>,
     args: &ExecProgramArgs,
     plugin_agent: u64,
 ) -> Result<ExecProgramResult, String> {
@@ -71,24 +79,36 @@ pub fn exec_program(
     let mut kcl_paths = Vec::<String>::new();
     let work_dir = args.work_dir.clone().unwrap_or_default();
 
-    // join work_path with k_file_path
+    // Join work_path with k_file_path
     for (_, file) in k_files.iter().enumerate() {
-        match Path::new(&work_dir).join(file).to_str() {
-            Some(str) => kcl_paths.push(String::from(str)),
-            None => (),
+        // If the input file or path is a relative path and it is not a absolute path in the KCL module VFS,
+        // join with the work directory path and convert it to a absolute path.
+        if !file.starts_with(KCL_MOD_PATH_ENV) && !Path::new(file).is_absolute() {
+            match Path::new(&work_dir).join(file).canonicalize() {
+                Ok(path) => kcl_paths.push(String::from(path.adjust_canonicalization())),
+                Err(_) => {
+                    return Err(PanicInfo::from_string(&format!(
+                        "Cannot find the kcl file, please check whether the file path {}",
+                        file
+                    ))
+                    .to_json_string())
+                }
+            }
+        } else {
+            kcl_paths.push(String::from(file))
         }
     }
 
     let kcl_paths_str = kcl_paths.iter().map(|s| s.as_str()).collect::<Vec<&str>>();
 
-    let mut program = load_program(kcl_paths_str.as_slice(), Some(opts))?;
+    let mut program = load_program(sess.clone(), kcl_paths_str.as_slice(), Some(opts))?;
 
     if let Err(err) = apply_overrides(&mut program, &args.overrides, &[], args.print_override_ast) {
         return Err(err.to_string());
     }
 
     let start_time = SystemTime::now();
-    let exec_result = execute(program, plugin_agent, args);
+    let exec_result = execute(sess, program, plugin_agent, args);
     let escape_time = match SystemTime::now().duration_since(start_time) {
         Ok(dur) => dur.as_secs_f32(),
         Err(err) => return Err(err.to_string()),
@@ -150,6 +170,11 @@ pub fn exec_program(
 /// use kclvm_runner::{execute, runner::ExecProgramArgs};
 /// use kclvm_parser::load_program;
 /// use kclvm_ast::ast::Program;
+/// use std::sync::Arc;
+/// use compiler_base_session::Session;
+///
+/// // Create sessions
+/// let sess = Arc::new(Session::default());
 /// // plugin_agent is the address of plugin.
 /// let plugin_agent = 0;
 /// // Get default args
@@ -158,20 +183,21 @@ pub fn exec_program(
 ///
 /// // Parse kcl file
 /// let kcl_path = "./src/test_datas/init_check_order_0/main.k";
-/// let prog = load_program(&[kcl_path], Some(opts)).unwrap();
+/// let prog = load_program(sess.clone(), &[kcl_path], Some(opts)).unwrap();
 ///     
 /// // Resolve ast, generate libs, link libs and execute.
 /// // Result is the kcl in json format.
-/// let result = execute(prog, plugin_agent, &args).unwrap();
+/// let result = execute(sess, prog, plugin_agent, &args).unwrap();
 /// ```
 pub fn execute(
+    sess: Arc<Session>,
     mut program: Program,
     plugin_agent: u64,
     args: &ExecProgramArgs,
 ) -> Result<String, String> {
     // Resolve ast
     let scope = resolve_program(&mut program);
-    scope.check_scope_diagnostics();
+    scope.alert_scope_diagnostics_with_session(sess)?;
 
     // Create a temp entry file and the temp dir will be delete automatically
     let temp_dir = tempdir().unwrap();
@@ -189,7 +215,7 @@ pub fn execute(
 
     // Link libs
     let lib_suffix = Command::get_lib_suffix();
-    let temp_out_lib_file = format!("{}.out{}", temp_entry_file, lib_suffix);
+    let temp_out_lib_file = format!("{}{}", temp_entry_file, lib_suffix);
     let lib_path = linker::KclvmLinker::link_all_libs(lib_paths, temp_out_lib_file);
 
     // Run
@@ -201,8 +227,12 @@ pub fn execute(
     );
     let result = runner.run(args);
 
-    // Clean temp files
+    // Clean temp files.
+    // FIXME(issue #346): On windows, sometimes there will be an error that the file cannot be accessed.
+    // Therefore, the function of automatically deleting dll files on windows is temporarily turned off.
+    #[cfg(not(target_os = "windows"))]
     remove_file(&lib_path);
+    #[cfg(not(target_os = "windows"))]
     clean_tmp_files(&temp_entry_file, &lib_suffix);
     result
 }
@@ -225,7 +255,12 @@ pub fn execute_module(mut m: Module) -> Result<String, String> {
         cmd_overrides: vec![],
     };
 
-    execute(prog, 0, &ExecProgramArgs::default())
+    execute(
+        Arc::new(Session::default()),
+        prog,
+        0,
+        &ExecProgramArgs::default(),
+    )
 }
 
 /// Clean all the tmp files generated during lib generating and linking.
@@ -238,7 +273,8 @@ fn clean_tmp_files(temp_entry_file: &String, lib_suffix: &String) {
 #[inline]
 fn remove_file(file: &str) {
     if Path::new(&file).exists() {
-        std::fs::remove_file(&file).unwrap_or_else(|_| panic!("{} not found", file));
+        std::fs::remove_file(&file)
+            .unwrap_or_else(|err| panic!("{} not found, defailts: {}", file, err));
     }
 }
 

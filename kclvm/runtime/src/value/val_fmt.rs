@@ -64,7 +64,7 @@ fn format_inf(case: Case) -> String {
 
 pub fn format_fixed(precision: usize, magnitude: f64, case: Case) -> String {
     match magnitude {
-        magnitude if magnitude.is_finite() => format!("{:.*}", precision, magnitude),
+        magnitude if magnitude.is_finite() => format!("{magnitude:.precision$}"),
         magnitude if magnitude.is_nan() => format_nan(case),
         magnitude if magnitude.is_infinite() => format_inf(case),
         _ => "".to_string(),
@@ -76,19 +76,19 @@ pub fn is_integer(v: f64) -> bool {
 }
 
 pub fn float_to_string(value: f64) -> String {
-    let lit = format!("{:e}", value);
+    let lit = format!("{value:e}");
     if let Some(position) = lit.find('e') {
         let significand = &lit[..position];
         let exponent = &lit[position + 1..];
         let exponent = exponent.parse::<i32>().unwrap();
         if exponent < 16 && exponent > -5 {
             if is_integer(value) {
-                format!("{:.1?}", value)
+                format!("{value:.1?}")
             } else {
                 value.to_string()
             }
         } else {
-            format!("{}e{:+#03}", significand, exponent)
+            format!("{significand}e{exponent:+#03}")
         }
     } else {
         value.to_string()
@@ -109,11 +109,11 @@ pub fn format_general(precision: usize, magnitude: f64, case: Case) -> String {
                 };
 
                 let base = remove_trailing_redundant_chars(format!("{:.*}", precision + 1, base));
-                format!("{}{}{:+#03}", base, e, exponent)
+                format!("{base}{e}{exponent:+#03}")
             } else {
                 let precision = (precision as i64) - 1 - exponent;
                 let precision = precision as usize;
-                remove_trailing_redundant_chars(format!("{:.*}", precision, magnitude))
+                remove_trailing_redundant_chars(format!("{magnitude:.precision$}"))
             }
         }
         magnitude if magnitude.is_nan() => format_nan(case),
@@ -127,7 +127,7 @@ pub fn format_general(precision: usize, magnitude: f64, case: Case) -> String {
 pub fn format_exponent(precision: usize, magnitude: f64, case: Case) -> String {
     match magnitude {
         magnitude if magnitude.is_finite() => {
-            let r_exp = format!("{:.*e}", precision, magnitude);
+            let r_exp = format!("{magnitude:.precision$e}");
             let mut parts = r_exp.splitn(2, 'e');
             let base = parts.next().unwrap();
             let exponent = parts.next().unwrap().parse::<i64>().unwrap();
@@ -135,7 +135,7 @@ pub fn format_exponent(precision: usize, magnitude: f64, case: Case) -> String {
                 Case::Lower => 'e',
                 Case::Upper => 'E',
             };
-            format!("{}{}{:+#03}", base, e, exponent)
+            format!("{base}{e}{exponent:+#03}")
         }
         magnitude if magnitude.is_nan() => format_nan(case),
         magnitude if magnitude.is_infinite() => format_inf(case),
@@ -556,16 +556,16 @@ impl FormatSpec {
             ""
         };
         let raw_magnitude_string_result: Result<String, &'static str> = match self.format_type {
-            Some(FormatType::Binary) => Ok(format!("{:b}", magnitude)),
-            Some(FormatType::Decimal) => Ok(format!("{}", magnitude)),
-            Some(FormatType::Octal) => Ok(format!("{:o}", magnitude)),
-            Some(FormatType::HexLower) => Ok(format!("{:x}", magnitude)),
+            Some(FormatType::Binary) => Ok(format!("{magnitude:b}")),
+            Some(FormatType::Decimal) => Ok(format!("{magnitude}")),
+            Some(FormatType::Octal) => Ok(format!("{magnitude:o}")),
+            Some(FormatType::HexLower) => Ok(format!("{magnitude:x}")),
             Some(FormatType::HexUpper) => {
-                let mut result = format!("{:x}", magnitude);
+                let mut result = format!("{magnitude:x}");
                 result.make_ascii_uppercase();
                 Ok(result)
             }
-            Some(FormatType::Number) => Ok(format!("{}", magnitude)),
+            Some(FormatType::Number) => Ok(format!("{magnitude}")),
             Some(FormatType::String) => Err("Unknown format code 's' for object of type 'int'"),
             Some(FormatType::Character) => Err("Unknown format code 'c' for object of type 'int'"),
             Some(FormatType::GeneralFormatUpper) => {
@@ -649,10 +649,7 @@ impl FormatSpec {
                     FormatSpec::compute_fill_string(fill_char, left_fill_chars_needed);
                 let right_fill_string =
                     FormatSpec::compute_fill_string(fill_char, right_fill_chars_needed);
-                format!(
-                    "{}{}{}{}",
-                    left_fill_string, sign_str, magnitude_string, right_fill_string
-                )
+                format!("{left_fill_string}{sign_str}{magnitude_string}{right_fill_string}")
             }
         })
     }
@@ -911,15 +908,15 @@ impl FormatString {
                         match name_part {
                             // Load attr
                             FieldNamePart::Attribute(attr) => {
-                                argument = args.dict_get_value(attr.as_str()).unwrap().clone();
+                                argument = argument.dict_get_value(attr.as_str()).unwrap().clone();
                             }
                             // List subscript
                             FieldNamePart::Index(index) => {
-                                argument = args.list_get(index as isize).unwrap().clone();
+                                argument = argument.list_get(index as isize).unwrap().clone();
                             }
                             // Dict subscript
                             FieldNamePart::StringIndex(value) => {
-                                argument = args.dict_get_value(value.as_str()).unwrap().clone();
+                                argument = argument.dict_get_value(value.as_str()).unwrap().clone();
                             }
                         }
                     }
@@ -979,9 +976,9 @@ pub fn quoted_string(value: &str) -> String {
     let has_double_quote = value.contains('\'');
     let has_single_quote = value.contains('\"');
     if !has_single_quote {
-        format!("'{}'", value)
+        format!("'{value}'")
     } else if !has_double_quote {
-        format!("\"{}\"", value)
+        format!("\"{value}\"")
     } else {
         format!("\"{}\"", value.replace('\"', "\\\""))
     }
@@ -999,18 +996,18 @@ impl fmt::Display for ValueRef {
                     write!(f, "False")
                 }
             }
-            Value::int_value(ref v) => write!(f, "{}", v),
+            Value::int_value(ref v) => write!(f, "{v}"),
             Value::float_value(ref v) => {
                 let mut float_str = v.to_string();
                 if !float_str.contains('.') {
                     float_str.push_str(".0");
                 }
-                write!(f, "{}", float_str)
+                write!(f, "{float_str}")
             }
             Value::unit_value(_, raw, unit) => {
-                write!(f, "{}{}", raw, unit)
+                write!(f, "{raw}{unit}")
             }
-            Value::str_value(ref v) => write!(f, "{}", v),
+            Value::str_value(ref v) => write!(f, "{v}"),
             Value::list_value(ref v) => {
                 let values: Vec<String> = v.values.iter().map(|v| v.to_string()).collect();
                 write!(f, "[{}]", values.join(", "))
@@ -1054,6 +1051,32 @@ impl ValueRef {
                 }
             }
             _ => self.to_string(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod test_value_fmt {
+    use crate::*;
+
+    #[test]
+    fn test_string_format() {
+        let cases = [
+            (r#""{} {}""#, r#"["Hello","World"]"#, "\"Hello World\""),
+            (r#""{:.0f}""#, r#"[1.0]"#, "\"1\""),
+            (r#""{:.1f} {:.0f}""#, r#"[1.0,2.0]"#, "\"1.0 2\""),
+            (
+                r#""0{0[0]}, 1{0[1]}, Hello{1[Hello]}""#,
+                r#"[["0","1"],{ "Hello": "World" }]"#,
+                "\"00, 11, HelloWorld\"",
+            ),
+        ];
+        for (format_string, args, expected) in cases {
+            let format_string = FormatString::from_str(format_string).unwrap();
+            let args = ValueRef::from_json(args).unwrap();
+            let kwargs = ValueRef::dict(None);
+            let result = format_string.format(&args, &kwargs);
+            assert_eq!(&result, expected)
         }
     }
 }

@@ -1,9 +1,6 @@
+use kclvm_span::Loc;
 use std::fmt;
 use std::hash::Hash;
-
-use kclvm_span::Loc;
-use rustc_span::Pos;
-use termcolor::{Color, ColorSpec};
 
 use crate::{ErrorKind, WarningKind};
 
@@ -19,7 +16,7 @@ pub struct Diagnostic {
 /// line, and column location.
 ///
 /// A Position is valid if the line number is > 0.
-/// The line and column are both 1 based.
+/// The line is 1-based and the column is 0-based.
 #[derive(PartialEq, Clone, Eq, Hash, Debug, Default)]
 pub struct Position {
     pub filename: String,
@@ -68,13 +65,17 @@ impl Position {
     }
 
     pub fn info(&self) -> String {
-        let mut info = "---> File ".to_string();
-        info += &self.filename;
-        info += &format!(":{}", self.line);
-        if let Some(column) = self.column {
-            info += &format!(":{}", column + 1);
+        if !self.filename.is_empty() {
+            let mut info = "---> File ".to_string();
+            info += &self.filename;
+            info += &format!(":{}", self.line);
+            if let Some(column) = self.column {
+                info += &format!(":{}", column + 1);
+            }
+            info
+        } else {
+            "".to_string()
         }
-        info
     }
 }
 
@@ -85,7 +86,7 @@ impl From<Loc> for Position {
             line: loc.line as u64,
             column: if loc.col_display > 0 {
                 // Loc col is the (0-based) column offset.
-                Some(loc.col.to_usize() as u64 + 1)
+                Some(loc.col.0 as u64)
             } else {
                 None
             },
@@ -147,26 +148,10 @@ pub enum Level {
 impl Level {
     pub fn to_str(self) -> &'static str {
         match self {
-            Level::Error => "Error",
-            Level::Warning => "Warning",
-            Level::Note => "Note",
+            Level::Error => "error",
+            Level::Warning => "warning",
+            Level::Note => "note",
         }
-    }
-
-    pub fn color(&self) -> ColorSpec {
-        let mut spec = ColorSpec::new();
-        match self {
-            Level::Error => {
-                spec.set_fg(Some(Color::Red)).set_intense(true);
-            }
-            Level::Warning => {
-                spec.set_fg(Some(Color::Yellow)).set_intense(cfg!(windows));
-            }
-            Level::Note => {
-                spec.set_fg(Some(Color::Green)).set_intense(true);
-            }
-        }
-        spec
     }
 }
 

@@ -238,7 +238,10 @@ impl<'ctx> Resolver<'ctx> {
                                 .clone(),
                             style: Style::LineAndColumn,
                             message: format!("The variable '{}' is declared here firstly", name),
-                            note: Some(format!("change the variable name to '_{}'", name)),
+                            note: Some(format!(
+                                "change the variable name to '_{}' to make it mutable",
+                                name
+                            )),
                         },
                     ],
                 );
@@ -254,16 +257,20 @@ impl<'ctx> Resolver<'ctx> {
                             ErrorKind::TypeError,
                             &[
                                 Message {
+                                    pos: start.clone(),
+                                    style: Style::LineAndColumn,
+                                    message: format!(
+                                        "can not change the type of '{}' to {}",
+                                        name,
+                                        obj.ty.ty_str()
+                                    ),
+                                    note: None,
+                                },
+                                Message {
                                     pos: obj.start.clone(),
                                     style: Style::LineAndColumn,
                                     message: format!("expect {}", obj.ty.ty_str()),
                                     note: None,
-                                },
-                                Message {
-                                    pos: start.clone(),
-                                    style: Style::LineAndColumn,
-                                    message: format!("can not change the type of '{}'", name),
-                                    note: Some(format!("got {}", ty.ty_str())),
                                 },
                             ],
                         );
@@ -322,7 +329,10 @@ impl<'ctx> Resolver<'ctx> {
                             .clone(),
                         style: Style::LineAndColumn,
                         message: format!("The variable '{}' is declared here firstly", name),
-                        note: Some(format!("Change the variable name to '_{}'", name)),
+                        note: Some(format!(
+                            "change the variable name to '_{}' to make it mutable",
+                            name
+                        )),
                     },
                 ],
             );
@@ -436,7 +446,7 @@ impl<'ctx> Resolver<'ctx> {
                             pos: parent_name.get_pos(),
                             style: Style::LineAndColumn,
                             message: format!(
-                                "invalid schema inherit object type, expect protocol, got '{}'",
+                                "invalid schema inherit object type, expect schema, got '{}'",
                                 ty.ty_str()
                             ),
                             note: None,
@@ -522,8 +532,8 @@ impl<'ctx> Resolver<'ctx> {
                 &index_signature.node.key_type.node,
                 index_signature.node.key_type.get_pos(),
             );
-            let val_ty = self.parse_ty_str_with_scope(
-                &index_signature.node.value_type.node,
+            let val_ty = self.parse_ty_with_scope(
+                &index_signature.node.value_ty.node,
                 index_signature.node.value_type.get_pos(),
             );
             if !self
@@ -553,7 +563,7 @@ impl<'ctx> Resolver<'ctx> {
         // Schema attributes
         let mut attr_obj_map: IndexMap<String, SchemaAttr> = IndexMap::default();
         attr_obj_map.insert(
-            kclvm::SCHEMA_SETTINGS_ATTR_NAME.to_string(),
+            kclvm_runtime::SCHEMA_SETTINGS_ATTR_NAME.to_string(),
             SchemaAttr {
                 is_optional: true,
                 has_default: false,
@@ -573,7 +583,12 @@ impl<'ctx> Resolver<'ctx> {
                     let ty = self.parse_ty_str_with_scope(&name, pos.clone());
                     let is_optional = true;
                     let has_default = true;
-                    (name, ty, is_optional, has_default)
+                    (
+                        unification_stmt.target.node.get_name(),
+                        ty,
+                        is_optional,
+                        has_default,
+                    )
                 }
                 ast::Stmt::SchemaAttr(schema_attr) => {
                     let name = schema_attr.name.node.clone();
@@ -713,11 +728,11 @@ impl<'ctx> Resolver<'ctx> {
                 });
             }
         }
-        let schema_runtime_ty = kclvm::schema_runtime_type(name, &self.ctx.pkgpath);
+        let schema_runtime_ty = kclvm_runtime::schema_runtime_type(name, &self.ctx.pkgpath);
         if should_add_schema_ref {
             if let Some(ref parent_ty) = parent_ty {
                 let parent_schema_runtime_ty =
-                    kclvm::schema_runtime_type(&parent_ty.name, &parent_ty.pkgpath);
+                    kclvm_runtime::schema_runtime_type(&parent_ty.name, &parent_ty.pkgpath);
                 self.ctx
                     .ty_ctx
                     .add_dependencies(&schema_runtime_ty, &parent_schema_runtime_ty);
@@ -825,10 +840,10 @@ impl<'ctx> Resolver<'ctx> {
             }
         }
         if should_add_schema_ref {
-            let schema_runtime_ty = kclvm::schema_runtime_type(name, &self.ctx.pkgpath);
+            let schema_runtime_ty = kclvm_runtime::schema_runtime_type(name, &self.ctx.pkgpath);
             for parent_ty in &parent_types {
                 let parent_schema_runtime_ty =
-                    kclvm::schema_runtime_type(&parent_ty.name, &parent_ty.pkgpath);
+                    kclvm_runtime::schema_runtime_type(&parent_ty.name, &parent_ty.pkgpath);
                 self.ctx
                     .ty_ctx
                     .add_dependencies(&schema_runtime_ty, &parent_schema_runtime_ty);

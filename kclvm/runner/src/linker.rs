@@ -14,7 +14,7 @@ impl KclvmLinker {
         let mut cmd = Command::new();
         // In the final stage of link, we can't ignore any undefined symbols and do
         // not allow external mounting of the implementation.
-        cmd.link_libs(&lib_paths, &lib_path)
+        cmd.link_libs_with_cc(&lib_paths, &lib_path)
     }
 }
 
@@ -52,8 +52,7 @@ pub fn lld_main(args: &[CString]) -> bool {
     unsafe {
         LldELFMain(command_line.as_ptr(), command_line.len()) == 0
     }
+
     #[cfg(target_os = "windows")]
-    unsafe {
-        LldMinGWMain(command_line.as_ptr(), command_line.len()) == 0
-    }
+    true
 }

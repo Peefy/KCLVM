@@ -1,12 +1,16 @@
+#![allow(clippy::missing_safety_doc)]
+
 extern crate serde;
 
-use kclvm_parser::load_program;
-use kclvm_query::apply_overrides;
-use kclvm_runner::execute;
+use compiler_base_session::Session;
+pub use kclvm_capi::service::api::*;
+use kclvm_runner::exec_program;
 use kclvm_runner::runner::*;
+pub use kclvm_runtime::*;
+use std::sync::Arc;
 
 #[no_mangle]
-pub extern "C" fn kclvm_cli_run(args: *const i8, plugin_agent: *const i8) -> *const i8 {
+pub unsafe extern "C" fn kclvm_cli_run(args: *const i8, plugin_agent: *const i8) -> *const i8 {
     let prev_hook = std::panic::take_hook();
 
     // disable print panic info
@@ -24,25 +28,16 @@ pub extern "C" fn kclvm_cli_run(args: *const i8, plugin_agent: *const i8) -> *co
                 ptr as *const i8
             }
             Err(result) => {
-                let result = format!("ERROR:{}", result);
+                let result = format!("ERROR:{result}");
                 let c_string =
                     std::ffi::CString::new(result.as_str()).expect("CString::new failed");
                 let ptr = c_string.into_raw();
                 ptr as *const i8
             }
         },
-        Err(panic_err) => {
-            let err_message = if let Some(s) = panic_err.downcast_ref::<&str>() {
-                s.to_string()
-            } else if let Some(s) = panic_err.downcast_ref::<&String>() {
-                (*s).clone()
-            } else if let Some(s) = panic_err.downcast_ref::<String>() {
-                (*s).clone()
-            } else {
-                "".to_string()
-            };
-
-            let result = format!("ERROR:{:}", err_message);
+        Err(err) => {
+            let err_message = kclvm_error::err_to_str(err);
+            let result = format!("ERROR:{err_message:}");
             let c_string = std::ffi::CString::new(result.as_str()).expect("CString::new failed");
             let ptr = c_string.into_raw();
             ptr as *const i8
@@ -51,18 +46,10 @@ pub extern "C" fn kclvm_cli_run(args: *const i8, plugin_agent: *const i8) -> *co
 }
 
 pub fn kclvm_cli_run_unsafe(args: *const i8, plugin_agent: *const i8) -> Result<String, String> {
-    let args = ExecProgramArgs::from_str(kclvm::c2str(args));
-    let plugin_agent = plugin_agent as u64;
-
-    let files = args.get_files();
-    let opts = args.get_load_program_options();
-
-    // Parse AST program.
-    let mut program = load_program(&files, Some(opts))?;
-    if let Err(msg) = apply_overrides(&mut program, &args.overrides, &[], args.print_override_ast) {
-        return Err(msg.to_string());
-    }
-
-    // Resolve AST program, generate libs, link libs and execute.
-    execute(program, plugin_agent, &args)
+    exec_program(
+        Arc::new(Session::default()),
+        &ExecProgramArgs::from_str(kclvm_runtime::c2str(args)),
+        plugin_agent as u64,
+    )
+    .map(|r| r.json_result)
 }

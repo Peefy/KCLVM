@@ -42,10 +42,6 @@ chmod +x $kclvm_install_dir/bin/kcl-lint
 chmod +x $kclvm_install_dir/bin/kcl-fmt
 chmod +x $kclvm_install_dir/bin/kcl-vet
 
-if [ -d $kclvm_install_dir/lib/site-packages/kclvm ]; then
-   rm -rf $kclvm_install_dir/lib/site-packages/kclvm
-fi
-
 set +x
 
 # build kclvm-cli
@@ -56,6 +52,15 @@ cargo build --release
 touch $kclvm_install_dir/bin/kclvm_cli
 rm $kclvm_install_dir/bin/kclvm_cli
 cp ./target/release/kclvm_cli $kclvm_install_dir/bin/kclvm_cli
+
+# build kcl LSP server
+
+cd $topdir/kclvm/tools/src/LSP
+cargo build --release
+
+touch $kclvm_install_dir/bin/kcl-language-server
+rm $kclvm_install_dir/bin/kcl-language-server
+cp $topdir/kclvm/target/release/kcl-language-server $kclvm_install_dir/bin/kcl-language-server
 
 # Switch dll file extension according to os.
 dll_extension="so"
@@ -70,52 +75,19 @@ case $os in
         ;;
 esac
 
-# libkclvm_cli
+# Copy libkclvm_cli lib
 
-# Darwin dylib
 if [ -e $topdir/kclvm/target/release/libkclvm_cli_cdylib.$dll_extension ]; then
     touch $kclvm_install_dir/bin/libkclvm_cli_cdylib.$dll_extension
     rm $kclvm_install_dir/bin/libkclvm_cli_cdylib.$dll_extension
     cp $topdir/kclvm/target/release/libkclvm_cli_cdylib.$dll_extension $kclvm_install_dir/bin/libkclvm_cli_cdylib.$dll_extension
 fi
 
-# build rust std lib
-
-RUST_SYS_ROOT=`rustc --print sysroot`
-
-# libstd-*.dylib or libstd-*.so
-cd $RUST_SYS_ROOT/lib
-RUST_LIBSTD=`find libstd-*.*`
-
-mkdir -p $kclvm_install_dir/lib
-cp "$RUST_SYS_ROOT/lib/$RUST_LIBSTD" $kclvm_install_dir/lib/$RUST_LIBSTD
-echo "$RUST_LIBSTD" > $kclvm_install_dir/lib/rust-libstd-name.txt
-
-# Build kclvm runtime
-
+# Copy KCLVM C API header
 cd $topdir/kclvm/runtime
-## Native
-cargo build --release
-
-# Darwin dylib
-# Linux so
-# Windows dll
-if [ -e $topdir/kclvm/target/release/libkclvm.$dll_extension ]; then
-    touch $kclvm_install_dir/lib/libkclvm.$dll_extension
-    rm $kclvm_install_dir/lib/libkclvm.$dll_extension
-    cp $topdir/kclvm/target/release/libkclvm.$dll_extension $kclvm_install_dir/lib/
-    cp $topdir/kclvm/target/release/libkclvm.$dll_extension $kclvm_install_dir/lib/libkclvm.$dll_extension
-fi
-
-# Copy LLVM runtime and header
-cd $topdir/kclvm/runtime
-cp src/_kclvm.bc $kclvm_install_dir/include/_kclvm.bc
 cp src/_kclvm.h  $kclvm_install_dir/include/_kclvm.h
 
-cd $kclvm_install_dir/include
-
 # build kclvm_plugin python module
-
 cd $topdir/kclvm/plugin
 python3 setup.py install_lib --install-dir=$kclvm_install_dir/lib/site-packages
 

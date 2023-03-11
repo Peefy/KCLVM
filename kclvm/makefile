@@ -10,6 +10,7 @@ COVER_REPORT_FILE_PATH:=$(PWD)/target/llvm-cov/html/index.html
 # Generate runtime libraries when the runtime code is changed.
 gen-runtime-api:
 	make -C ./runtime gen-api-spec
+	make fmt
 
 # Install the wasm target
 install-rustc-wasm:
@@ -40,6 +41,10 @@ fmt:
 lint:
 	cargo clippy
 
+# Cargo clippy all packages witj auto ix
+fix:
+	cargo clippy --fix --allow-dirty
+
 # ------------------------
 # Tests
 # ------------------------
@@ -68,6 +73,10 @@ test-runtime:
 # E2E grammar tests.
 test-grammar:
 	cd tests/integration/grammar && kclvm -m pytest -v -n 5
+
+# E2E konfig tests.
+test-konfig:
+	cd tests/integration/konfig && kclvm -m pytest -v -n 5
 
 # Parser fuzz.
 fuzz-parser:

@@ -17,7 +17,6 @@ mod expr;
 mod int;
 mod module;
 mod precedence;
-mod schema;
 mod stmt;
 #[cfg(test)]
 mod tests;
@@ -25,6 +24,7 @@ mod ty;
 
 use crate::session::ParseSession;
 
+use compiler_base_span::span::new_byte_pos;
 use kclvm_ast::ast::{Comment, NodeRef};
 use kclvm_ast::token::{CommentKind, Token, TokenKind};
 use kclvm_ast::token_stream::{Cursor, TokenStream};
@@ -45,7 +45,7 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     pub fn new(sess: &'a ParseSession, stream: TokenStream) -> Self {
-        let (non_comment_tokens, comments) = Parser::split_token_stream(&sess, stream);
+        let (non_comment_tokens, comments) = Parser::split_token_stream(sess, stream);
 
         let mut parser = Parser {
             token: Token::dummy(),
@@ -66,17 +66,16 @@ impl<'a> Parser<'a> {
         lo_tok: Token,
         hi_tok: Token,
     ) -> (String, u64, u64, u64, u64) {
-        use rustc_span::Pos;
-        let lo = self.sess.source_map.lookup_char_pos(lo_tok.span.lo());
-        let hi = self.sess.source_map.lookup_char_pos(hi_tok.span.hi());
+        let lo = self.sess.lookup_char_pos(lo_tok.span.lo());
+        let hi = self.sess.lookup_char_pos(hi_tok.span.hi());
 
         let filename: String = format!("{}", lo.file.name.prefer_remapped());
         (
             filename,
             lo.line as u64,
-            lo.col.to_usize() as u64,
+            lo.col.0 as u64,
             hi.line as u64,
-            hi.col.to_usize() as u64,
+            hi.col.0 as u64,
         )
     }
 
@@ -91,46 +90,14 @@ impl<'a> Parser<'a> {
 
     pub(crate) fn bump_keyword(&mut self, kw: Symbol) {
         if !self.token.is_keyword(kw) {
-            if let TokenKind::Ident(ident) = self.token.kind {
-                self.sess.struct_span_error(
-                    &format!(
-                        "bump keyword failed: expect={}, got={:?} # ident={}",
-                        kw.to_ident_string(),
-                        self.token,
-                        ident
-                    ),
-                    self.token.span,
-                );
-            } else {
-                self.sess.struct_span_error(
-                    &format!(
-                        "bump keyword failed: expect={}, {:?}",
-                        kw.to_ident_string(),
-                        self.token
-                    ),
-                    self.token.span,
-                );
-            }
+            self.sess.struct_token_error(&[kw.into()], self.token);
         }
         self.bump();
     }
 
     pub(crate) fn bump_token(&mut self, kind: TokenKind) {
         if self.token.kind != kind {
-            if let TokenKind::Ident(ident) = self.token.kind {
-                self.sess.struct_span_error(
-                    &format!(
-                        "bump token failed: expect={:?}, got={:?} # ident={}",
-                        kind, self.token, ident
-                    ),
-                    self.token.span,
-                );
-            } else {
-                self.sess.struct_span_error(
-                    &format!("bump token failed: expect={:?}, {:?}", kind, self.token),
-                    self.token.span,
-                );
-            }
+            self.sess.struct_token_error(&[kind.into()], self.token);
         }
         self.bump();
     }
@@ -147,8 +114,6 @@ impl<'a> Parser<'a> {
         sess: &'a ParseSession,
         stream: TokenStream,
     ) -> (Vec<Token>, Vec<NodeRef<Comment>>) {
-        use rustc_span::BytePos;
-
         let mut comments = Vec::new();
         let mut non_comment_tokens = Vec::new();
 
@@ -156,7 +121,7 @@ impl<'a> Parser<'a> {
             let prev_token = if i == 0 {
                 Token {
                     kind: TokenKind::Dummy,
-                    span: kclvm_span::Span::new(BytePos(0), BytePos(0)),
+                    span: kclvm_span::Span::new(new_byte_pos(0), new_byte_pos(0)),
                 }
             } else {
                 stream[i - 1]
@@ -180,9 +145,8 @@ impl<'a> Parser<'a> {
                 match tok.kind {
                     TokenKind::DocComment(comment_kind) => match comment_kind {
                         CommentKind::Line(x) => {
-                            use rustc_span::Pos;
-                            let lo = sess.source_map.lookup_char_pos(tok.span.lo());
-                            let hi = sess.source_map.lookup_char_pos(tok.span.hi());
+                            let lo = sess.lookup_char_pos(tok.span.lo());
+                            let hi = sess.lookup_char_pos(tok.span.hi());
                             let filename: String = format!("{}", lo.file.name.prefer_remapped());
 
                             let node = kclvm_ast::ast::Node {
@@ -191,9 +155,9 @@ impl<'a> Parser<'a> {
                                 },
                                 filename,
                                 line: lo.line as u64,
-                                column: lo.col.to_usize() as u64,
+                                column: lo.col.0 as u64,
                                 end_line: hi.line as u64,
-                                end_column: hi.col.to_usize() as u64,
+                                end_column: hi.col.0 as u64,
                             };
 
                             comments.push(NodeRef::new(node));

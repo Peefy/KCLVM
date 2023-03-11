@@ -2,7 +2,7 @@ use protobuf::Message;
 
 use crate::model::gpyrpc::*;
 use crate::service::service::KclvmService;
-use kclvm::utils::*;
+use kclvm_runtime::utils::*;
 use std::ffi::CString;
 use std::os::raw::c_char;
 
@@ -70,17 +70,8 @@ pub extern "C" fn kclvm_service_call(
     match result {
         //todo uniform error handling
         Ok(result) => result,
-        Err(panic_err) => {
-            let err_message = if let Some(s) = panic_err.downcast_ref::<&str>() {
-                s.to_string()
-            } else if let Some(s) = panic_err.downcast_ref::<&String>() {
-                (*s).clone()
-            } else if let Some(s) = panic_err.downcast_ref::<String>() {
-                (*s).clone()
-            } else {
-                "".to_string()
-            };
-
+        Err(err) => {
+            let err_message = kclvm_error::err_to_str(err);
             let c_string =
                 std::ffi::CString::new(format!("KCLVM_CAPI_CALL_ERROR:{}", err_message.as_str()))
                     .expect("CString::new failed");
@@ -101,8 +92,8 @@ pub(crate) fn _kclvm_get_service_fn_ptr_by_name(name: &str) -> u64 {
 
 /// ping is used to test whether kclvm service is successfully imported
 /// arguments and return results should be consistent
-pub fn ping(serv: *mut KclvmService, args: &[u8]) -> *const c_char {
-    let serv_ref = mut_ptr_as_ref(serv);
+pub(crate) fn ping(serv: *mut KclvmService, args: &[u8]) -> *const c_char {
+    let serv_ref = unsafe { mut_ptr_as_ref(serv) };
     let args = Ping_Args::parse_from_bytes(args).unwrap();
     let res = serv_ref.ping(&args);
     CString::new(res.write_to_bytes().unwrap())
@@ -126,8 +117,8 @@ pub fn ping(serv: *mut KclvmService, args: &[u8]) -> *const c_char {
 ///
 /// result: [*const c_char]
 ///     Result of the call serialized as protobuf byte sequence
-pub fn exec_program(serv: &mut KclvmService, args: &[u8]) -> *const c_char {
-    let serv_ref = mut_ptr_as_ref(serv);
+pub(crate) fn exec_program(serv: &mut KclvmService, args: &[u8]) -> *const c_char {
+    let serv_ref = unsafe { mut_ptr_as_ref(serv) };
     let args = ExecProgram_Args::parse_from_bytes(args).unwrap();
     let res = serv_ref.exec_program(&args);
     let result_byte = match res {
@@ -156,8 +147,8 @@ pub fn exec_program(serv: &mut KclvmService, args: &[u8]) -> *const c_char {
 ///
 /// result: [*const c_char]
 ///     Result of the call serialized as protobuf byte sequence
-pub fn override_file(serv: &mut KclvmService, args: &[u8]) -> *const c_char {
-    let serv_ref = mut_ptr_as_ref(serv);
+pub(crate) fn override_file(serv: &mut KclvmService, args: &[u8]) -> *const c_char {
+    let serv_ref = unsafe { mut_ptr_as_ref(serv) };
     let args = OverrideFile_Args::parse_from_bytes(args).unwrap();
     let res = serv_ref.override_file(&args);
     let result_byte = match res {

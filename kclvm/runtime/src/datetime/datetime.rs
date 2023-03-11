@@ -1,6 +1,7 @@
 //! KCL datetime system module
 //!
 //! Copyright 2021 The KCL Authors. All rights reserved.
+#![allow(clippy::missing_safety_doc)]
 
 extern crate chrono;
 
@@ -15,12 +16,12 @@ type kclvm_value_ref_t = ValueRef;
 
 #[no_mangle]
 #[runtime_fn]
-pub extern "C" fn kclvm_datetime_today(
+pub unsafe extern "C" fn kclvm_datetime_today(
     _ctx: *mut kclvm_context_t,
     _args: *const kclvm_value_ref_t,
     _kwargs: *const kclvm_value_ref_t,
 ) -> *const kclvm_value_ref_t {
-    let s = Local::today().to_string();
+    let s = Local::now().to_string();
     return ValueRef::str(s.as_ref()).into_raw();
 }
 
@@ -28,7 +29,7 @@ pub extern "C" fn kclvm_datetime_today(
 
 #[no_mangle]
 #[runtime_fn]
-pub extern "C" fn kclvm_datetime_now(
+pub unsafe extern "C" fn kclvm_datetime_now(
     _ctx: *mut kclvm_context_t,
     _args: *const kclvm_value_ref_t,
     _kwargs: *const kclvm_value_ref_t,
@@ -41,7 +42,7 @@ pub extern "C" fn kclvm_datetime_now(
 
 #[no_mangle]
 #[runtime_fn]
-pub extern "C" fn kclvm_datetime_ticks(
+pub unsafe extern "C" fn kclvm_datetime_ticks(
     _ctx: *mut kclvm_context_t,
     _args: *const kclvm_value_ref_t,
     _kwargs: *const kclvm_value_ref_t,
@@ -54,11 +55,11 @@ pub extern "C" fn kclvm_datetime_ticks(
 
 #[no_mangle]
 #[runtime_fn]
-pub extern "C" fn kclvm_datetime_date(
+pub unsafe extern "C" fn kclvm_datetime_date(
     _ctx: *mut kclvm_context_t,
     _args: *const kclvm_value_ref_t,
     _kwargs: *const kclvm_value_ref_t,
 ) -> *const kclvm_value_ref_t {
-    let s = Local::today().to_string();
+    let s = Local::now().to_string();
     return ValueRef::str(s.as_ref()).into_raw();
 }

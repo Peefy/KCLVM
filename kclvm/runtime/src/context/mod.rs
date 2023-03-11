@@ -4,16 +4,18 @@ pub mod api;
 pub use api::*;
 use std::fmt;
 
+use crate::PanicInfo;
+
 #[allow(non_camel_case_types)]
 type kclvm_value_ref_t = crate::ValueRef;
 
-impl fmt::Display for crate::PanicInfo {
+impl fmt::Display for PanicInfo {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
-impl crate::PanicInfo {
+impl PanicInfo {
     pub fn to_json_string(&self) -> String {
         let result = serde_json::to_string(&self);
         match result {
@@ -33,6 +35,33 @@ impl crate::PanicInfo {
                 panic!("PanicInfo Deserialize Failed")
             }
         }
+    }
+
+    ///  Parse a string or json string to a PanicInfo.
+    pub fn from_string(s: &str) -> Self {
+        let result = serde_json::from_str(s);
+        match result {
+            Ok(res) => res,
+            Err(_) => {
+                let mut panic_info = PanicInfo::default();
+                panic_info.__kcl_PanicInfo__ = true;
+                panic_info.message = s.to_string();
+                panic_info.err_type_code = crate::ErrType::CompileError_TYPE as i32;
+                panic_info
+            }
+        }
+    }
+}
+
+impl From<String> for PanicInfo {
+    fn from(value: String) -> Self {
+        Self::from_string(&value)
+    }
+}
+
+impl From<&str> for PanicInfo {
+    fn from(value: &str) -> Self {
+        Self::from_string(value)
     }
 }
 
@@ -234,7 +263,7 @@ impl crate::Context {
                 default_value = (*v).clone();
             }
 
-            let s = format!("  -D {}={}", name, default_value);
+            let s = format!("  -D {name}={default_value}");
             msg.push_str(s.as_str());
 
             // (required)

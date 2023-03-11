@@ -128,7 +128,9 @@ fn filter_results(key_values: &ValueRef) -> Vec<ValueRef> {
         }
         results
             .iter()
-            .filter(|r| !r.is_planned_empty())
+            .enumerate()
+            .filter(|(index, r)| *index == 0 || !r.is_planned_empty())
+            .map(|v| v.1)
             .cloned()
             .collect()
     } else {
@@ -143,7 +145,7 @@ fn handle_schema(value: &ValueRef) -> (Vec<ValueRef>, bool) {
     }
     let settings = SCHEMA_SETTINGS_ATTR_NAME;
     let output_type = SETTINGS_OUTPUT_KEY;
-    let path = format!("{}.{}", settings, output_type);
+    let path = format!("{settings}.{output_type}");
     let output_type_option = value.get_by_path(&path);
     if let Some(ref output_type) = output_type_option {
         if output_type.str_equal(SETTINGS_OUTPUT_IGNORE) {
@@ -196,7 +198,7 @@ impl ValueRef {
         let results = filter_results(self);
         let yaml_result = results
             .iter()
-            .map(|r| r.to_yaml_string().strip_suffix("\n").unwrap().to_string())
+            .map(|r| r.to_yaml_string().strip_suffix('\n').unwrap().to_string())
             .collect::<Vec<String>>()
             .join(YAML_STREAM_SEP);
         let mut list_result = ValueRef::list(None);
@@ -283,6 +285,8 @@ impl ValueRef {
                             attr_map: IndexMap::default(),
                         }),
                         config_keys: vec![],
+                        config_meta: v.config_meta.clone(),
+                        optional_mapping: v.optional_mapping.clone(),
                     })))),
                 };
                 for (key, val) in v.config.values.iter() {

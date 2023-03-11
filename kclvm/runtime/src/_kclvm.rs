@@ -19,7 +19,7 @@ impl std::fmt::Display for ApiType {
 impl ApiType {
     #[allow(dead_code)]
     pub fn name(&self) -> String {
-        format!("{:?}", self)
+        format!("{self:?}")
     }
 }
 
@@ -127,13 +127,6 @@ pub enum ApiFunc {
     kclvm_datetime_now,
     kclvm_datetime_ticks,
     kclvm_datetime_today,
-    kclvm_debug_hello,
-    kclvm_debug_invoke_func,
-    kclvm_debug_print,
-    kclvm_debug_print_str_list,
-    kclvm_debug_print_type,
-    kclvm_debug_print_value,
-    kclvm_debug_print_value_json_string,
     kclvm_default_collection_insert_int_pointer,
     kclvm_default_collection_insert_value,
     kclvm_dict_clear,
@@ -370,13 +363,13 @@ pub enum ApiFunc {
 
 impl std::fmt::Display for ApiFunc {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
 impl ApiFunc {
     #[allow(dead_code)]
     pub fn name(&self) -> String {
-        format!("{:?}", self)
+        format!("{self:?}")
     }
 }

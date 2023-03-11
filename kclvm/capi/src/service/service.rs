@@ -1,11 +1,13 @@
+use std::sync::Arc;
 use std::{path::Path, string::String, time::SystemTime};
 
 use crate::model::gpyrpc::*;
 
-use kclvm::ValueRef;
+use compiler_base_session::Session;
 use kclvm_parser::load_program;
 use kclvm_query::apply_overrides;
 use kclvm_query::override_file;
+use kclvm_runtime::ValueRef;
 use protobuf_json_mapping::print_to_string_with_options;
 use protobuf_json_mapping::PrintOptions;
 
@@ -26,6 +28,7 @@ impl KclvmService {
     /// # Examples
     ///
     /// ```
+    /// use kclvm_capi::service::service::KclvmService;
     /// use kclvm_capi::model::gpyrpc::*;
     /// let serv = &KclvmService { plugin_agent: 0 };
     /// let args = &Ping_Args {
@@ -48,16 +51,20 @@ impl KclvmService {
     /// # Examples
     ///
     /// ```
+    /// use kclvm_capi::service::service::KclvmService;
     /// use kclvm_capi::model::gpyrpc::*;
+    /// use std::path::Path;
+    ///
     /// let serv = &KclvmService { plugin_agent: 0 };
     /// let args = &ExecProgram_Args {
-    ///     work_dir: "./src/testdata".to_string(),
-    ///     k_filename_list: vec!["./src/testdata".to_string()],
+    ///     work_dir: Path::new(".").join("src").join("testdata").canonicalize().unwrap().display().to_string(),
+    ///     k_filename_list: vec![Path::new(".").join("src").join("testdata").canonicalize().unwrap().display().to_string()],
     ///     ..Default::default()
     /// };
     /// let exec_result = serv.exec_program(args).unwrap();
     /// println!("{}",exec_result.json_result);
     /// ```
+    ///
     pub fn exec_program(&self, args: &ExecProgram_Args) -> Result<ExecProgram_Result, String> {
         // transform args to json
         let args_json = print_to_string_with_options(
@@ -85,7 +92,8 @@ impl KclvmService {
 
         let kcl_paths_str = kcl_paths.iter().map(|s| s.as_str()).collect::<Vec<&str>>();
         let mut result = ExecProgram_Result::default();
-        let mut program = load_program(&kcl_paths_str.as_slice(), Some(opts))?;
+        let sess = Arc::new(Session::default());
+        let mut program = load_program(sess.clone(), &kcl_paths_str.as_slice(), Some(opts))?;
 
         if let Err(err) = apply_overrides(
             &mut program,
@@ -97,7 +105,7 @@ impl KclvmService {
         }
 
         let start_time = SystemTime::now();
-        let exec_result = kclvm_runner::execute(program, self.plugin_agent, &native_args);
+        let exec_result = kclvm_runner::execute(sess, program, self.plugin_agent, &native_args);
         let escape_time = match SystemTime::now().duration_since(start_time) {
             Ok(dur) => dur.as_secs_f32(),
             Err(err) => return Err(err.to_string()),
@@ -132,6 +140,7 @@ impl KclvmService {
     /// # Examples
     ///
     /// ```
+    /// use kclvm_capi::service::service::KclvmService;
     /// use kclvm_capi::model::gpyrpc::*;
     /// let serv = &KclvmService { plugin_agent: 0 };
     /// let args = &OverrideFile_Args {

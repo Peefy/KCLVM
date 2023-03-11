@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 #![allow(unused_macros)]
 
-use core::panic;
-
+use compiler_base_span::{span::new_byte_pos, BytePos};
 use kclvm_ast::token::{DelimToken, LitKind, Token, TokenKind};
 use kclvm_ast::{ast::*, expr_as, node_ref};
 use kclvm_span::symbol::kw;
@@ -117,7 +116,7 @@ impl<'a> Parser<'_> {
         }
 
         // expr or assign
-        self.parse_expr_or_assign_stmt()
+        self.parse_expr_or_assign_stmt(false)
     }
 
     /// Syntax:
@@ -126,7 +125,7 @@ impl<'a> Parser<'_> {
         &mut self,
         open_tok: TokenKind,
         close_tok: TokenKind,
-    ) -> Vec<Box<Node<Stmt>>> {
+    ) -> Vec<NodeRef<Stmt>> {
         let mut stmt_list = Vec::new();
 
         self.bump_token(open_tok);
@@ -170,7 +169,7 @@ impl<'a> Parser<'_> {
     ///     | COMP_DOUBLE_DIVIDE | COMP_MOD | COMP_AND | COMP_OR | COMP_XOR | COMP_SHIFT_LEFT
     ///     | COMP_SHIFT_RIGHT | L_OR | L_AND)
     ///     test
-    fn parse_expr_or_assign_stmt(&mut self) -> Option<NodeRef<Stmt>> {
+    fn parse_expr_or_assign_stmt(&mut self, is_in_schema_stmt: bool) -> Option<NodeRef<Stmt>> {
         let token = self.token;
         let mut targets = vec![self.parse_expr()];
 
@@ -237,7 +236,7 @@ impl<'a> Parser<'_> {
         }
 
         if let TokenKind::BinOpEq(x) = self.token.kind {
-            if targets.len() == 1 && type_annotation.is_some() {
+            if targets.len() == 1 && type_annotation.is_some() && is_in_schema_stmt {
                 let aug_op = AugOp::from(x);
                 self.bump_token(self.token.kind);
                 let value = self.parse_expr();
@@ -260,6 +259,7 @@ impl<'a> Parser<'_> {
             }
         }
 
+        let stmt_end_token = self.prev_token;
         self.skip_newlines();
 
         if let Some(value) = value_or_target {
@@ -275,7 +275,9 @@ impl<'a> Parser<'_> {
                         x.ctx = ExprContext::Store;
                         Box::new(Node::node_with_pos(x, expr.pos()))
                     }
-                    _ => panic!("invalid target: {:?}", expr.node),
+                    _ => self
+                        .sess
+                        .struct_token_error(&[TokenKind::ident_value()], self.token),
                 })
                 .collect();
 
@@ -286,10 +288,10 @@ impl<'a> Parser<'_> {
                     type_annotation,
                     ty,
                 }),
-                self.token_span_pos(token, self.prev_token)
+                self.token_span_pos(token, stmt_end_token)
             ))
         } else {
-            if targets.len() == 1 && type_annotation.is_some() {
+            if targets.len() == 1 && type_annotation.is_some() && is_in_schema_stmt {
                 if let Expr::Identifier(target) = &targets[0].node {
                     return Some(node_ref!(
                         Stmt::SchemaAttr(SchemaAttr {
@@ -302,23 +304,27 @@ impl<'a> Parser<'_> {
                             is_optional: false,
                             decorators: Vec::new(),
                         }),
-                        self.token_span_pos(token, self.prev_token)
+                        self.token_span_pos(token, stmt_end_token)
                     ));
                 }
             }
+            if type_annotation.is_none() {
+                let mut pos = targets[0].pos();
+                pos.3 = targets.last().unwrap().end_line;
+                pos.4 = targets.last().unwrap().end_column;
 
-            let mut pos = targets[0].pos();
-            pos.3 = targets.last().unwrap().end_line;
-            pos.4 = targets.last().unwrap().end_column;
+                let t = Box::new(Node::node_with_pos(
+                    Stmt::Expr(ExprStmt {
+                        exprs: targets.clone(),
+                    }),
+                    pos,
+                ));
 
-            let t = Box::new(Node::node_with_pos(
-                Stmt::Expr(ExprStmt {
-                    exprs: targets.clone(),
-                }),
-                pos,
-            ));
-
-            Some(t)
+                Some(t)
+            } else {
+                self.sess
+                    .struct_token_error(&[TokenKind::Assign.into()], self.token)
+            }
         }
     }
 
@@ -452,7 +458,9 @@ impl<'a> Parser<'_> {
             self.bump_token(TokenKind::Colon);
 
             let body = if self.token.kind != TokenKind::Newline {
-                vec![self.parse_expr_or_assign_stmt().expect("invalid if_stmt")]
+                vec![self
+                    .parse_expr_or_assign_stmt(false)
+                    .expect("invalid if_stmt")]
             } else {
                 self.skip_newlines();
                 self.parse_block_stmt_list(TokenKind::Indent, TokenKind::Dedent)
@@ -480,7 +488,9 @@ impl<'a> Parser<'_> {
             self.bump_token(TokenKind::Colon);
 
             let body = if self.token.kind != TokenKind::Newline {
-                vec![self.parse_expr_or_assign_stmt().expect("invalid if_stmt")]
+                vec![self
+                    .parse_expr_or_assign_stmt(false)
+                    .expect("invalid if_stmt")]
             } else {
                 self.skip_newlines();
                 self.parse_block_stmt_list(TokenKind::Indent, TokenKind::Dedent)
@@ -508,7 +518,9 @@ impl<'a> Parser<'_> {
             self.bump_token(TokenKind::Colon);
 
             let else_body = if self.token.kind != TokenKind::Newline {
-                vec![self.parse_expr_or_assign_stmt().expect("invalid if_stmt")]
+                vec![self
+                    .parse_expr_or_assign_stmt(false)
+                    .expect("invalid if_stmt")]
             } else {
                 self.skip_newlines();
                 self.parse_block_stmt_list(TokenKind::Indent, TokenKind::Dedent)
@@ -690,9 +702,9 @@ impl<'a> Parser<'_> {
                 Expr::Call(x) => {
                     decorators.push(node_ref!(x, expr_pos));
                 }
-                _ => {
-                    panic!("invalid Decorator: {:?}", expr);
-                }
+                _ => self
+                    .sess
+                    .struct_token_error(&[TokenKind::ident_value()], self.token),
             };
 
             self.skip_newlines();
@@ -711,7 +723,6 @@ impl<'a> Parser<'_> {
         close_tokens: &[TokenKind],
         bump_close: bool,
     ) -> Option<NodeRef<Arguments>> {
-        debug_assert!(!close_tokens.is_empty());
         let mut has_open_token = false;
 
         let token = self.token;
@@ -893,7 +904,13 @@ impl<'a> Parser<'_> {
                     });
                     body_body.push(node_ref!(stmt, self.token_span_pos(token, self.prev_token)));
                 } else {
-                    self.sess.struct_compiler_bug("unreachable");
+                    self.sess.struct_span_error(
+                        &format!(
+                            "Expect a index signature or list expression here, got {}",
+                            Into::<String>::into(self.token)
+                        ),
+                        self.token.span,
+                    )
                 }
 
                 self.skip_newlines();
@@ -901,7 +918,7 @@ impl<'a> Parser<'_> {
             }
 
             // expr or attr
-            if let Some(x) = self.parse_expr_or_assign_stmt() {
+            if let Some(x) = self.parse_expr_or_assign_stmt(true) {
                 if let Stmt::SchemaAttr(attr) = &x.node {
                     body_body.push(node_ref!(Stmt::SchemaAttr(attr.clone()), x.pos()));
                     continue;
@@ -1349,10 +1366,10 @@ impl<'a> Parser<'_> {
     pub(crate) fn parse_joined_string(
         &mut self,
         s: &StringLit,
-        pos: rustc_span::BytePos,
+        pos: BytePos,
     ) -> Option<JoinedString> {
         // skip raw string
-        if s.raw_value.starts_with(&['r', 'R']) {
+        if s.raw_value.starts_with(['r', 'R']) {
             return None;
         }
         if !s.value.contains("${") {
@@ -1360,9 +1377,9 @@ impl<'a> Parser<'_> {
         }
 
         let start_pos = if s.is_long_string {
-            pos + rustc_span::BytePos(3)
+            pos + new_byte_pos(3)
         } else {
-            pos + rustc_span::BytePos(1)
+            pos + new_byte_pos(1)
         };
 
         let mut joined_value = JoinedString {
@@ -1371,22 +1388,18 @@ impl<'a> Parser<'_> {
             values: Vec::new(),
         };
 
-        fn parse_expr(
-            this: &mut Parser,
-            src: &str,
-            start_pos: rustc_span::BytePos,
-        ) -> NodeRef<Expr> {
+        fn parse_expr(this: &mut Parser, src: &str, start_pos: BytePos) -> NodeRef<Expr> {
             use crate::lexer::parse_token_streams;
-
-            debug_assert!(src.starts_with("${"), "{}", src);
-            debug_assert!(src.ends_with('}'), "{}", src);
 
             let src = &src[2..src.len() - 1];
             if src.is_empty() {
-                panic!("string interpolation expression can not be empty")
+                this.sess.struct_span_error(
+                    "String interpolation expression can not be empty",
+                    this.token.span,
+                );
             }
 
-            let start_pos = start_pos + rustc_span::BytePos(2);
+            let start_pos = start_pos + new_byte_pos(2);
 
             let stream = parse_token_streams(this.sess, src, start_pos);
 
@@ -1401,7 +1414,6 @@ impl<'a> Parser<'_> {
             // bump to the first token
             parser.bump();
 
-            let _token = parser.token;
             let expr = parser.parse_expr();
 
             let mut formatted_value = FormattedValue {
@@ -1413,14 +1425,13 @@ impl<'a> Parser<'_> {
             if let TokenKind::Colon = parser.token.kind {
                 parser.bump();
                 if let TokenKind::DocComment(_) = parser.token.kind {
-                    let format_spec = parser
-                        .sess
-                        .source_map
-                        .span_to_snippet(parser.token.span)
-                        .unwrap();
+                    let format_spec = parser.sess.span_to_snippet(parser.token.span);
                     formatted_value.format_spec = Some(format_spec);
                 } else {
-                    panic!("invalid joined string spec");
+                    this.sess.struct_span_error(
+                        "Invalid joined string spec without #",
+                        parser.token.span,
+                    );
                 }
             }
 
@@ -1444,15 +1455,18 @@ impl<'a> Parser<'_> {
                         value: s0.to_string().replace("$$", "$"),
                     }));
 
-                    let s1_expr = parse_expr(self, s1, start_pos + rustc_span::BytePos(lo as u32));
+                    let s1_expr = parse_expr(self, s1, start_pos + new_byte_pos(lo as u32));
 
-                    joined_value.values.push(s0_expr);
+                    if !s0.is_empty() {
+                        joined_value.values.push(s0_expr);
+                    }
                     joined_value.values.push(s1_expr);
 
                     off = hi;
                     continue;
                 } else {
-                    panic!("invalid joined string");
+                    self.sess
+                        .struct_span_error("Invalid joined string", self.token.span);
                 }
             } else {
                 if off >= s.value.as_str().len() {

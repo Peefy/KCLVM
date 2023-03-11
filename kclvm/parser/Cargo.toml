@@ -1,14 +1,15 @@
 [package]
 name = "kclvm-parser"
-version = "0.1.0"
+version = "0.4.5"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rustc_span = { path = "../3rdparty/rustc_span" }
-rustc_data_structures = { path = "../3rdparty/rustc_data_structures" }
-
+compiler_base_span = {path = "../../compiler_base/span", version = "0.0.2"}
+compiler_base_session = {path = "../../compiler_base/session", version = "0.0.12"}
+compiler_base_error = "0.0.8"
+compiler_base_macros = "0.0.1"
 tracing = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
@@ -18,14 +19,16 @@ enquote = "1.1.0"
 unicode_names2 = "0.4"
 bstr = "0.2.16"
 num-bigint = "0.4"
+regex = "1.7.0"
 
-kclvm-lexer = {path = "../lexer", version = "0.1.0"}
-kclvm-ast = {path = "../ast", version = "0.1.0"}
-kclvm-span = {path = "../span", version = "0.1.0"}
-kclvm-error = {path = "../error", version = "0.1.0"}
-kclvm-config = {path = "../config", version = "0.1.0"}
-kclvm-sema = {path = "../sema", version = "0.1.0"}
-kclvm-runtime = {path = "../runtime", version = "0.1.0"}
+kclvm-lexer = {path = "../lexer", version = "0.4.5"}
+kclvm-ast = {path = "../ast", version = "0.4.5"}
+kclvm-span = {path = "../span", version = "0.4.5"}
+kclvm-error = {path = "../error", version = "0.4.5"}
+kclvm-config = {path = "../config", version = "0.4.5"}
+kclvm-sema = {path = "../sema", version = "0.4.5"}
+kclvm-runtime = {path = "../runtime", version = "0.4.5"}
+kclvm-utils = {path = "../utils", version = "0.4.5"}
 
 
 [dev-dependencies]

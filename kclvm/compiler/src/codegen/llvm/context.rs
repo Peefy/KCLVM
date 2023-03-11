@@ -1,6 +1,6 @@
 // Copyright 2021 The KCL Authors. All rights reserved.
 
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -21,20 +21,20 @@ use std::path::Path;
 use std::rc::Rc;
 use std::str;
 
-use kclvm::{ApiFunc, MAIN_PKG_PATH, PKG_PATH_PREFIX};
 use kclvm_ast::ast;
 use kclvm_ast::walker::TypedResultWalker;
 use kclvm_error::*;
+use kclvm_runtime::{ApiFunc, MAIN_PKG_PATH, PKG_PATH_PREFIX};
 use kclvm_sema::builtin;
 use kclvm_sema::plugin;
 
 use crate::codegen::abi::Align;
-use crate::codegen::CodeGenContext;
 use crate::codegen::{error as kcl_error, EmitOptions};
 use crate::codegen::{
     traits::*, ENTRY_NAME, GLOBAL_VAL_ALIGNMENT, KCL_CONTEXT_VAR_NAME, MODULE_NAME,
     PKG_INIT_FUNCTION_SUFFIX,
 };
+use crate::codegen::{CodeGenContext, GLOBAL_LEVEL};
 use crate::pkgpath_without_prefix;
 use crate::value;
 
@@ -57,6 +57,7 @@ pub type CompileResult<'a> = Result<BasicValueEnum<'a>, kcl_error::KCLError>;
 pub struct Scope<'ctx> {
     pub variables: RefCell<IndexMap<String, PointerValue<'ctx>>>,
     pub closures: RefCell<IndexMap<String, PointerValue<'ctx>>>,
+    pub arguments: RefCell<IndexSet<String>>,
 }
 
 /// Schema internal order independent computation backtracking meta information.
@@ -79,6 +80,7 @@ pub struct LLVMCodeGenContext<'ctx> {
     pub local_vars: RefCell<HashSet<String>>,
     pub schema_stack: RefCell<Vec<value::SchemaType>>,
     pub lambda_stack: RefCell<Vec<bool>>,
+    pub schema_expr_stack: RefCell<Vec<()>>,
     pub pkgpath_stack: RefCell<Vec<String>>,
     pub filename_stack: RefCell<Vec<String>>,
     pub target_vars: RefCell<Vec<String>>,
@@ -418,7 +420,7 @@ impl<'ctx> ValueMethods for LLVMCodeGenContext<'ctx> {
     fn function_value(&self, function: FunctionValue<'ctx>) -> Self::Value {
         let lambda_fn_ptr = self.builder.build_bitcast(
             function.as_global_value().as_pointer_value(),
-            self.context.i64_type().ptr_type(AddressSpace::Generic),
+            self.context.i64_type().ptr_type(AddressSpace::default()),
             "",
         );
         self.build_call(
@@ -431,7 +433,7 @@ impl<'ctx> ValueMethods for LLVMCodeGenContext<'ctx> {
         // Convert the function to a i64 pointer to store it into the function value.
         let fn_ptr = self.builder.build_bitcast(
             function.as_global_value().as_pointer_value(),
-            self.context.i64_type().ptr_type(AddressSpace::Generic),
+            self.context.i64_type().ptr_type(AddressSpace::default()),
             "",
         );
         let name = self.native_global_string("", "").into();
@@ -452,20 +454,20 @@ impl<'ctx> ValueMethods for LLVMCodeGenContext<'ctx> {
         // Convert the function to a i64 pointer to store it into the function value.
         let schema_body_fn_ptr = self.builder.build_bitcast(
             functions[0].as_global_value().as_pointer_value(),
-            self.context.i64_type().ptr_type(AddressSpace::Generic),
+            self.context.i64_type().ptr_type(AddressSpace::default()),
             "",
         );
         // Convert the function to a i64 pointer to store it into the function value.
         let check_block_fn_ptr = if functions.len() > 1 {
             self.builder.build_bitcast(
                 functions[1].as_global_value().as_pointer_value(),
-                self.context.i64_type().ptr_type(AddressSpace::Generic),
+                self.context.i64_type().ptr_type(AddressSpace::default()),
                 "",
             )
         } else {
             self.context
                 .i64_type()
-                .ptr_type(AddressSpace::Generic)
+                .ptr_type(AddressSpace::default())
                 .const_zero()
                 .into()
         };
@@ -509,10 +511,10 @@ impl<'ctx> ValueMethods for LLVMCodeGenContext<'ctx> {
             let msg = format!("pkgpath {} is not found", pkgpath);
             let modules = self.modules.borrow_mut();
             let module = modules.get(&pkgpath).expect(&msg).borrow_mut();
-            module.add_global(tpe, Some(AddressSpace::Generic), name)
+            module.add_global(tpe, Some(AddressSpace::default()), name)
         } else {
             self.module
-                .add_global(tpe, Some(AddressSpace::Generic), name)
+                .add_global(tpe, Some(AddressSpace::default()), name)
         };
         global_var.set_alignment(GLOBAL_VAL_ALIGNMENT);
         global_var.set_initializer(&tpe.const_zero());
@@ -957,6 +959,7 @@ impl<'ctx> ProgramCodeGen for LLVMCodeGenContext<'ctx> {
             let scopes = vec![Rc::new(Scope {
                 variables: RefCell::new(IndexMap::default()),
                 closures: RefCell::new(IndexMap::default()),
+                arguments: RefCell::new(IndexSet::default()),
             })];
             pkg_scopes.insert(String::from(pkgpath), scopes);
         }
@@ -964,7 +967,7 @@ impl<'ctx> ProgramCodeGen for LLVMCodeGenContext<'ctx> {
         // Init all global types including schema and rule
         let module_list: &Vec<ast::Module> = if self.program.pkgs.contains_key(pkgpath) {
             self.program.pkgs.get(pkgpath).expect(&msg)
-        } else if pkgpath.starts_with(kclvm::PKG_PATH_PREFIX)
+        } else if pkgpath.starts_with(kclvm_runtime::PKG_PATH_PREFIX)
             && self.program.pkgs.contains_key(&pkgpath[1..])
         {
             self.program
@@ -1026,6 +1029,7 @@ impl<'ctx> ProgramCodeGen for LLVMCodeGenContext<'ctx> {
         let scope = Rc::new(Scope {
             variables: RefCell::new(IndexMap::default()),
             closures: RefCell::new(IndexMap::default()),
+            arguments: RefCell::new(IndexSet::default()),
         });
         scopes.push(scope);
     }
@@ -1067,6 +1071,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             local_vars: RefCell::new(HashSet::new()),
             schema_stack: RefCell::new(vec![]),
             lambda_stack: RefCell::new(vec![false]),
+            schema_expr_stack: RefCell::new(vec![]),
             pkgpath_stack: RefCell::new(vec![String::from(MAIN_PKG_PATH)]),
             filename_stack: RefCell::new(vec![String::from("")]),
             target_vars: RefCell::new(vec![String::from("")]),
@@ -1101,7 +1106,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                 assert!(self.program.pkgs.len() == 1);
                 format!(
                     "{}{}",
-                    kclvm::PKG_PATH_PREFIX,
+                    kclvm_runtime::PKG_PATH_PREFIX,
                     self.program
                         .pkgs
                         .keys()
@@ -1148,7 +1153,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             .expect(kcl_error::INTERNAL_ERROR_MSG);
         if self.no_link && !has_main_pkg {
             for pkgpath in self.program.pkgs.keys() {
-                let pkgpath = format!("{}{}", kclvm::PKG_PATH_PREFIX, pkgpath);
+                let pkgpath = format!("{}{}", kclvm_runtime::PKG_PATH_PREFIX, pkgpath);
                 self.pkgpath_stack.borrow_mut().push(pkgpath.clone());
             }
         }
@@ -1174,7 +1179,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         if !self.no_link {
             let global_ctx = self.module.add_global(
                 context_ptr_type,
-                Some(AddressSpace::Generic),
+                Some(AddressSpace::default()),
                 KCL_CONTEXT_VAR_NAME,
             );
             global_ctx.set_alignment(GLOBAL_VAL_ALIGNMENT);
@@ -1187,7 +1192,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             assert!(self.program.pkgs.len() == 1);
             // pkgs may not contains main pkg in no link mode
             for (pkgpath, modules) in &self.program.pkgs {
-                let pkgpath = format!("{}{}", kclvm::PKG_PATH_PREFIX, pkgpath);
+                let pkgpath = format!("{}{}", kclvm_runtime::PKG_PATH_PREFIX, pkgpath);
                 self.pkgpath_stack.borrow_mut().push(pkgpath.clone());
                 // Init all builtin functions.
                 self.init_scope(pkgpath.as_str());
@@ -1375,10 +1380,10 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             let msg = format!("pkgpath {} is not found", pkgpath);
             let modules = self.modules.borrow_mut();
             let module = modules.get(&pkgpath).expect(&msg).borrow_mut();
-            module.add_global(tpe, Some(AddressSpace::Generic), name)
+            module.add_global(tpe, Some(AddressSpace::default()), name)
         } else {
             self.module
-                .add_global(tpe, Some(AddressSpace::Generic), name)
+                .add_global(tpe, Some(AddressSpace::default()), name)
         };
         global_var.set_alignment(GLOBAL_VAL_ALIGNMENT);
         global_var.set_initializer(&tpe.const_zero());
@@ -1397,6 +1402,18 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                 variables.insert(name.to_string(), pointer);
             }
         }
+    }
+
+    /// Store the argument named `name` in the current scope.
+    pub(crate) fn store_argument_in_current_scope(&self, name: &str) {
+        // Find argument name in the scope
+        let current_pkgpath = self.current_pkgpath();
+        let mut pkg_scopes = self.pkg_scopes.borrow_mut();
+        let msg = format!("pkgpath {} is not found", current_pkgpath);
+        let scopes = pkg_scopes.get_mut(&current_pkgpath).expect(&msg);
+        let index = scopes.len() - 1;
+        let mut arguments_mut = scopes[index].arguments.borrow_mut();
+        arguments_mut.insert(name.to_string());
     }
 
     /// Store the variable named `name` with `value` from the current scope, return false when not found
@@ -1450,6 +1467,43 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             }
         }
         existed
+    }
+
+    /// Append a variable or update the existed local variable.
+    pub fn add_or_update_local_variable(&self, name: &str, value: BasicValueEnum<'ctx>) {
+        let current_pkgpath = self.current_pkgpath();
+        let mut pkg_scopes = self.pkg_scopes.borrow_mut();
+        let msg = format!("pkgpath {} is not found", current_pkgpath);
+        let scopes = pkg_scopes.get_mut(&current_pkgpath).expect(&msg);
+        let mut existed = false;
+        // Query the variable in all scopes.
+        for i in 0..scopes.len() {
+            let index = scopes.len() - i - 1;
+            let variables_mut = scopes[index].variables.borrow_mut();
+            match variables_mut.get(&name.to_string()) {
+                // If the local varibale is found, store the new value for the variable.
+                // We cannot update rule/lambda/schema arguments because they are read-only.
+                Some(ptr)
+                    if index > GLOBAL_LEVEL
+                        && !self.local_vars.borrow().contains(name)
+                        && !scopes[index].arguments.borrow().contains(name) =>
+                {
+                    self.builder.build_store(*ptr, value);
+                    existed = true;
+                }
+                _ => {}
+            }
+        }
+        // If not found, alloca a new varibale.
+        if !existed {
+            let ptr = self.builder.build_alloca(self.value_ptr_type(), name);
+            self.builder.build_store(ptr, value);
+            // Store the value for the variable and add the varibale into the current scope.
+            if let Some(last) = scopes.last_mut() {
+                let mut variables = last.variables.borrow_mut();
+                variables.insert(name.to_string(), ptr);
+            }
+        }
     }
 
     /// Append a variable or update the existed variable
@@ -1583,11 +1637,12 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
     /// Get the variable value named `name` from the scope named `pkgpath`, return Err when not found
     pub fn get_variable_in_pkgpath(&self, name: &str, pkgpath: &str) -> CompileResult<'ctx> {
         let pkg_scopes = self.pkg_scopes.borrow_mut();
-        let pkgpath = if !pkgpath.starts_with(kclvm::PKG_PATH_PREFIX) && pkgpath != MAIN_PKG_PATH {
-            format!("{}{}", kclvm::PKG_PATH_PREFIX, pkgpath)
-        } else {
-            pkgpath.to_string()
-        };
+        let pkgpath =
+            if !pkgpath.starts_with(kclvm_runtime::PKG_PATH_PREFIX) && pkgpath != MAIN_PKG_PATH {
+                format!("{}{}", kclvm_runtime::PKG_PATH_PREFIX, pkgpath)
+            } else {
+                pkgpath.to_string()
+            };
         let mut result = Err(kcl_error::KCLError {
             message: format!("name '{}' is not defined", name),
             ty: kcl_error::KCLErrorType::Compile,
@@ -1604,8 +1659,8 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             let value = if pkgpath == builtin::system_module::UNITS
                 && builtin::system_module::UNITS_FIELD_NAMES.contains(&name)
             {
-                let value_float: f64 = kclvm::f64_unit_value(name);
-                let value_int: u64 = kclvm::u64_unit_value(name);
+                let value_float: f64 = kclvm_runtime::f64_unit_value(name);
+                let value_int: u64 = kclvm_runtime::u64_unit_value(name);
                 if value_int != 1 {
                     self.int_value(value_int as i64)
                 } else {
@@ -1616,7 +1671,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                 // Convert the function to a i64 pointer to store it into the function value.
                 let lambda_fn_ptr = self.builder.build_bitcast(
                     function.as_global_value().as_pointer_value(),
-                    self.context.i64_type().ptr_type(AddressSpace::Generic),
+                    self.context.i64_type().ptr_type(AddressSpace::default()),
                     "",
                 );
                 let name = self.native_global_string("", "").into();
@@ -1633,7 +1688,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             let null_fn_ptr = self
                 .context
                 .i64_type()
-                .ptr_type(AddressSpace::Generic)
+                .ptr_type(AddressSpace::default())
                 .const_zero()
                 .into();
             let name = format!("{}.{}", &pkgpath[1..], name);
@@ -1690,15 +1745,14 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                         handler.add_compile_error(
                             &err.message,
                             Position {
-                                filename: self.current_filename().clone(),
-                                line: self.current_line.borrow().clone(),
+                                filename: self.current_filename(),
+                                line: *self.current_line.borrow(),
                                 column: None,
                             },
                         );
-                        handler.abort_if_errors()
-                    } else {
-                        result
+                        handler.abort_if_any_errors()
                     }
+                    result
                 }
             }
         }
@@ -1710,12 +1764,13 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         name: &str,
         pkgpath: &str,
     ) -> CompileResult<'ctx> {
-        let ext_pkgpath =
-            if !pkgpath.starts_with(kclvm::PKG_PATH_PREFIX) && pkgpath != kclvm::MAIN_PKG_PATH {
-                format!("{}{}", kclvm::PKG_PATH_PREFIX, pkgpath)
-            } else {
-                pkgpath.to_string()
-            };
+        let ext_pkgpath = if !pkgpath.starts_with(kclvm_runtime::PKG_PATH_PREFIX)
+            && pkgpath != kclvm_runtime::MAIN_PKG_PATH
+        {
+            format!("{}{}", kclvm_runtime::PKG_PATH_PREFIX, pkgpath)
+        } else {
+            pkgpath.to_string()
+        };
         // System module or plugin module
         if builtin::STANDARD_SYSTEM_MODULE_NAMES_WITH_AT.contains(&ext_pkgpath.as_str())
             || ext_pkgpath.starts_with(plugin::PLUGIN_PREFIX_WITH_AT)
@@ -1740,7 +1795,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             *ptr
         } else {
             let global_var =
-                module.add_global(tpe, Some(AddressSpace::Generic), &external_var_name);
+                module.add_global(tpe, Some(AddressSpace::default()), &external_var_name);
             global_var.set_alignment(GLOBAL_VAL_ALIGNMENT);
             global_var.set_linkage(Linkage::External);
             let ptr = global_var.as_pointer_value();
@@ -1785,10 +1840,12 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             }
         }
         if is_in_schema {
-            let schema_value = self
-                .get_variable(value::SCHEMA_SELF_NAME)
-                .expect(kcl_error::INTERNAL_ERROR_MSG);
-            self.dict_insert_override_item(dict_value, value::SCHEMA_SELF_NAME, schema_value);
+            for shcmea_closure_name in value::SCHEMA_VARIABLE_LIST {
+                let value = self
+                    .get_variable(shcmea_closure_name)
+                    .expect(kcl_error::INTERNAL_ERROR_MSG);
+                self.dict_insert_override_item(dict_value, shcmea_closure_name, value);
+            }
         }
         dict_value
     }
@@ -1829,7 +1886,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         let global_dict = self.dict_value();
         for (name, ptr) in globals.iter() {
             // Omit private variables and function variables
-            if name.starts_with(kclvm::KCL_PRIVATE_VAR_PREFIX) {
+            if name.starts_with(kclvm_runtime::KCL_PRIVATE_VAR_PREFIX) {
                 continue;
             }
             let value = self.builder.build_load(*ptr, "");

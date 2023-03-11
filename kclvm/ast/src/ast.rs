@@ -38,8 +38,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use kclvm_span::Loc;
-use rustc_span::Pos;
+use compiler_base_span::{Loc, Span};
 
 use super::token;
 use crate::node_ref;
@@ -90,9 +89,9 @@ impl<T> Node<T> {
             node,
             filename: format!("{}", lo.file.name.prefer_remapped()),
             line: lo.line as u64,
-            column: lo.col.to_usize() as u64,
+            column: lo.col.0 as u64,
             end_line: hi.line as u64,
-            end_column: hi.col.to_usize() as u64,
+            end_column: hi.col.0 as u64,
         }
     }
 
@@ -124,6 +123,14 @@ impl<T> Node<T> {
         self.end_line = pos.3;
         self.end_column = pos.4;
     }
+}
+
+/// Spanned<T> is the span information that all AST nodes need to contain.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Spanned<T> {
+    pub node: T,
+    #[serde(skip)]
+    pub span: Span,
 }
 
 impl TryInto<Node<Identifier>> for Node<Expr> {
@@ -225,7 +232,7 @@ impl Module {
         let mut stmts = Vec::new();
         for stmt in &self.body {
             if let Stmt::Schema(schema_stmt) = &stmt.node {
-                stmts.push(node_ref!(schema_stmt.clone()));
+                stmts.push(node_ref!(schema_stmt.clone(), stmt.pos()));
             }
         }
         return stmts;
