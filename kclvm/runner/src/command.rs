@@ -170,6 +170,7 @@ impl Command {
             .arg("/DEFAULTLIB:msvcrt.lib")
             .arg("/DEFAULTLIB:libcmt.lib")
             .arg("/DLL")
+            .arg(format!("/IMPLIB:{}", lib_path))
             .arg(format!("/OUT:{}", lib_path))
             .arg("/EXPORT:_kcl_run")
             .arg("/EXPORT:kclvm_main")
