@@ -1,7 +1,10 @@
 // Copyright 2021 The KCL Authors. All rights reserved.
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use serde::{
+    de::{DeserializeSeed, Error, MapAccess, SeqAccess, Unexpected, Visitor},
+    Deserialize, Serialize,
+};
+use std::{collections::HashMap, ops::Deref, path::PathBuf};
 
 /// Default settings file `kcl.yaml`
 pub const DEFAULT_SETTING_FILE: &str = "kcl.yaml";
@@ -56,6 +59,9 @@ pub struct Config {
     pub disable_none: Option<bool>,
     pub verbose: Option<u32>,
     pub debug: Option<bool>,
+    // kclvm needs a mapping between the package name and the package path
+    // to determine the source code path corresponding to different version package.
+    pub package_maps: Option<HashMap<String, String>>,
 }
 
 impl SettingsFile {
@@ -71,6 +77,7 @@ impl SettingsFile {
                 disable_none: Some(false),
                 verbose: Some(0),
                 debug: Some(false),
+                package_maps: Some(HashMap::default()),
             }),
             kcl_options: Some(vec![]),
         }
@@ -110,10 +117,222 @@ impl Default for SettingsFile {
     }
 }
 
+/// Top level argument key value pair.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct KeyValuePair {
+    /// key is the top level argument key.
     pub key: String,
-    pub value: String,
+    // Note: here is a normal json string including int, float, string, bool list and dict.
+    pub value: ValueString,
+}
+
+#[macro_export]
+macro_rules! tri {
+    ($e:expr $(,)?) => {
+        match $e {
+            core::result::Result::Ok(val) => val,
+            core::result::Result::Err(err) => return core::result::Result::Err(err),
+        }
+    };
+}
+
+/// MapStringKey denotes the map deserialize key.
+struct MapStringKey;
+impl<'de> DeserializeSeed<'de> for MapStringKey {
+    type Value = String;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(self)
+    }
+}
+
+impl<'de> Visitor<'de> for MapStringKey {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a string key")
+    }
+
+    fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(s.to_owned())
+    }
+
+    fn visit_string<E>(self, s: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(s)
+    }
+}
+
+/// Top level argument value string.
+/// Note: here is a normal json string including int, float, string, bool list and dict.
+#[derive(Serialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct ValueString(pub String);
+
+impl Deref for ValueString {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<String> for ValueString {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for ValueString {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for ValueString {
+    #[inline]
+    fn deserialize<D>(deserializer: D) -> Result<ValueString, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ValueVisitor;
+
+        impl<'de> Visitor<'de> for ValueVisitor {
+            type Value = ValueString;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("any valid JSON value or KCL value expression")
+            }
+
+            #[inline]
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                Ok(ValueString(serde_json::to_string(&value).map_err(
+                    |_| Error::invalid_type(Unexpected::Bool(value), &self),
+                )?))
+            }
+
+            #[inline]
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                Ok(ValueString(serde_json::to_string(&value).map_err(
+                    |_| Error::invalid_type(Unexpected::Signed(value), &self),
+                )?))
+            }
+
+            #[inline]
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                Ok(ValueString(serde_json::to_string(&value).map_err(
+                    |_| Error::invalid_type(Unexpected::Unsigned(value), &self),
+                )?))
+            }
+
+            #[inline]
+            fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                Ok(ValueString(serde_json::to_string(&value).map_err(
+                    |_| Error::invalid_type(Unexpected::Float(value), &self),
+                )?))
+            }
+
+            #[inline]
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                self.visit_string(String::from(value))
+            }
+
+            #[inline]
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                Ok(ValueString(serde_json::to_string(&value).map_err(
+                    |_| Error::invalid_type(Unexpected::Str(&value), &self),
+                )?))
+            }
+
+            #[inline]
+            fn visit_none<E>(self) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                Ok(ValueString("null".into()))
+            }
+
+            #[inline]
+            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+                D::Error: Error,
+            {
+                Deserialize::deserialize(deserializer)
+            }
+
+            #[inline]
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(ValueString("null".into()))
+            }
+
+            #[inline]
+            fn visit_seq<V>(self, mut visitor: V) -> Result<Self::Value, V::Error>
+            where
+                V: SeqAccess<'de>,
+                V::Error: Error,
+            {
+                let mut vec: Vec<serde_json::Value> = Vec::new();
+
+                while let Some(elem) = tri!(visitor.next_element()) {
+                    vec.push(elem);
+                }
+
+                Ok(ValueString(serde_json::to_string(&vec).map_err(|_| {
+                    Error::invalid_type(Unexpected::Seq, &self)
+                })?))
+            }
+
+            fn visit_map<V>(self, mut visitor: V) -> Result<Self::Value, V::Error>
+            where
+                V: MapAccess<'de>,
+                V::Error: Error,
+            {
+                match visitor.next_key_seed(MapStringKey)? {
+                    Some(first_key) => {
+                        let mut values: HashMap<String, serde_json::Value> = HashMap::new();
+
+                        values.insert(first_key, tri!(visitor.next_value()));
+                        while let Some((key, value)) = tri!(visitor.next_entry()) {
+                            values.insert(key, value);
+                        }
+
+                        Ok(ValueString(serde_json::to_string(&values).map_err(
+                            |_| Error::invalid_type(Unexpected::Map, &self),
+                        )?))
+                    }
+                    None => Ok(ValueString("{}".into())),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(ValueVisitor)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -154,6 +373,7 @@ pub fn merge_settings(settings: &[SettingsFile]) -> SettingsFile {
                 set_if!(result_kcl_cli_configs, disable_none, kcl_cli_configs);
                 set_if!(result_kcl_cli_configs, verbose, kcl_cli_configs);
                 set_if!(result_kcl_cli_configs, debug, kcl_cli_configs);
+                set_if!(result_kcl_cli_configs, package_maps, kcl_cli_configs);
             }
         }
         if let Some(kcl_options) = &setting.kcl_options {
@@ -199,7 +419,7 @@ mod settings_test {
             }
         }
         if let Some(kcl_options) = settings.kcl_options {
-            assert!(kcl_options.len() == 2);
+            assert!(kcl_options.len() == 6);
         }
     }
 
@@ -226,8 +446,57 @@ mod settings_test {
             }
         }
         if let Some(kcl_options) = settings.kcl_options {
-            assert!(kcl_options.len() == 4);
+            assert!(kcl_options.len() == 12);
         }
         Ok(())
     }
+}
+
+/// Build SettingsPathBuf from args.
+pub fn build_settings_pathbuf(
+    files: &[&str],
+    setting_files: Option<Vec<&str>>,
+    setting_config: Option<SettingsFile>,
+) -> Result<SettingsPathBuf> {
+    let mut path = None;
+    let settings = if let Some(files) = setting_files {
+        let mut settings = vec![];
+        for file in &files {
+            let s = load_file(file)?;
+            if !s.input().is_empty() {
+                path = Some(
+                    PathBuf::from(file)
+                        .parent()
+                        .map(|p| p.to_path_buf())
+                        .ok_or(anyhow::anyhow!("The parent path of {file} is not found"))?,
+                )
+            }
+            settings.push(s);
+        }
+        merge_settings(&settings)
+    // If exists default kcl.yaml, load it.
+    } else if std::fs::metadata(DEFAULT_SETTING_FILE).is_ok() {
+        path = Some(
+            PathBuf::from(DEFAULT_SETTING_FILE)
+                .parent()
+                .map(|p| p.to_path_buf())
+                .ok_or(anyhow::anyhow!(
+                    "The parent path of {DEFAULT_SETTING_FILE} is not found"
+                ))?,
+        );
+        load_file(DEFAULT_SETTING_FILE)?
+    } else {
+        SettingsFile::default()
+    };
+    let mut settings = if let Some(setting_config) = setting_config {
+        merge_settings(&[settings, setting_config])
+    } else {
+        settings
+    };
+    if let Some(config) = &mut settings.kcl_cli_configs {
+        if !files.is_empty() {
+            config.files = Some(files.iter().map(|f| f.to_string()).collect());
+        }
+    }
+    Ok(SettingsPathBuf::new(path, settings))
 }

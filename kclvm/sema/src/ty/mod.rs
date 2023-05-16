@@ -61,12 +61,7 @@ impl Type {
                 .collect::<Vec<String>>()
                 .join("|"),
             TypeKind::Schema(schema_ty) => schema_ty.name.to_string(),
-            TypeKind::NumberMultiplier(number_multiplier) => format!(
-                "{}({}{})",
-                NUMBER_MULTIPLIER_TYPE_STR,
-                number_multiplier.raw_value,
-                number_multiplier.binary_suffix
-            ),
+            TypeKind::NumberMultiplier(number_multiplier) => number_multiplier.ty_str(),
             TypeKind::Function(_) => FUNCTION_TYPE_STR.to_string(),
             TypeKind::Void => VOID_TYPE_STR.to_string(),
             TypeKind::Module(module_ty) => format!("{} '{}'", MODULE_TYPE_STR, module_ty.pkgpath),
@@ -213,6 +208,7 @@ impl SchemaType {
                     has_default: false,
                     ty,
                     pos: Position::dummy_pos(),
+                    doc: None,
                 };
                 self.attrs.insert(attr.to_string(), schema_attr);
             }
@@ -256,6 +252,7 @@ pub struct SchemaAttr {
     pub has_default: bool,
     pub ty: Rc<Type>,
     pub pos: Position,
+    pub doc: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -321,10 +318,14 @@ pub struct NumberMultiplierType {
 
 impl NumberMultiplierType {
     pub fn ty_str(&self) -> String {
-        format!(
-            "{}({}{})",
-            NUMBER_MULTIPLIER_TYPE_STR, self.raw_value, self.binary_suffix
-        )
+        if self.is_literal {
+            format!(
+                "{}({}{})",
+                NUMBER_MULTIPLIER_TYPE_STR, self.raw_value, self.binary_suffix
+            )
+        } else {
+            NUMBER_MULTIPLIER_TYPE_STR.to_string()
+        }
     }
 }
 

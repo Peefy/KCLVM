@@ -1,18 +1,18 @@
+use anyhow::bail;
 use compiler_base_session::Session;
 use indexmap::IndexMap;
 use kclvm_ast::{ast, MAIN_PKG};
-use kclvm_error::Handler;
-
+use kclvm_error::{Handler, Level};
 use std::sync::Arc;
 use std::{
     cell::RefCell,
     rc::{Rc, Weak},
 };
 
-use crate::resolver::pos::ContainsPos;
 use crate::resolver::Resolver;
 use crate::ty::Type;
 use crate::{builtin::BUILTIN_FUNCTIONS, ty::TypeInferMethods};
+use kclvm_ast::pos::ContainsPos;
 use kclvm_error::Position;
 
 /// The object stored in the scope.
@@ -30,6 +30,8 @@ pub struct ScopeObject {
     pub kind: ScopeObjectKind,
     /// Record whether has been used, for check unused imported module and var definition
     pub used: bool,
+    /// The doc of the scope object, will be None unless the scope object represents a schema or schema attribute.
+    pub doc: Option<String>,
 }
 
 impl ScopeObject {
@@ -191,6 +193,22 @@ impl Scope {
             None => None,
         }
     }
+
+    /// Search scope obj by the object name.
+    pub fn search_obj_by_name(&self, name: &str) -> Vec<ScopeObject> {
+        let mut res = vec![];
+        for (obj_name, obj) in &self.elems {
+            if obj_name == name {
+                res.push(obj.borrow().clone())
+            }
+        }
+        for c in &self.children {
+            let c = c.borrow();
+            let mut objs = c.search_obj_by_name(name);
+            res.append(&mut objs);
+        }
+        res
+    }
 }
 
 /// Program scope is scope contains a multiple scopes related to the
@@ -201,6 +219,8 @@ pub struct ProgramScope {
     pub import_names: IndexMap<String, IndexMap<String, String>>,
     pub handler: Handler,
 }
+
+unsafe impl Send for ProgramScope {}
 
 impl ProgramScope {
     /// Get all package paths.
@@ -215,21 +235,28 @@ impl ProgramScope {
         self.scope_map.get(MAIN_PKG)
     }
 
-    /// Return diagnostic json string but do not abort if exist any diagnostic.
-    pub fn alert_scope_diagnostics(&self) -> Result<(), String> {
-        if !self.handler.diagnostics.is_empty() {
-            self.handler.alert_if_any_errors()
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Return diagnostic json using session string but do not abort if exist any diagnostic.
-    pub fn alert_scope_diagnostics_with_session(&self, sess: Arc<Session>) -> Result<(), String> {
-        for diag in &self.handler.diagnostics {
-            sess.add_err(diag.clone()).unwrap();
-        }
-        self.alert_scope_diagnostics()
+    /// Return diagnostic pretty string but do not abort if the session exists any diagnostic.
+    pub fn emit_diagnostics_to_string(&self, sess: Arc<Session>) -> Result<(), String> {
+        let emit_error = || -> anyhow::Result<()> {
+            // Add resolve errors into the session
+            for diag in &self.handler.diagnostics {
+                if matches!(diag.level, Level::Error) {
+                    sess.add_err(diag.clone())?;
+                }
+            }
+            // If has syntax and resolve errors, return its string format.
+            if sess.diag_handler.has_errors()? {
+                let errors = sess.emit_all_diags_into_string()?;
+                let mut error_strings = vec![];
+                for error in errors {
+                    error_strings.push(error?);
+                }
+                bail!(error_strings.join("\n"))
+            } else {
+                Ok(())
+            }
+        };
+        emit_error().map_err(|e| e.to_string())
     }
 }
 
@@ -246,6 +273,7 @@ pub(crate) fn builtin_scope() -> Scope {
                 ty: Rc::new(builtin_func.clone()),
                 kind: ScopeObjectKind::Definition,
                 used: false,
+                doc: None,
             })),
         );
     }
@@ -278,6 +306,7 @@ impl<'ctx> Resolver<'ctx> {
             children.push(Rc::clone(&scope));
             // Deref self.scope
         }
+        self.scope_level += 1;
         self.scope = Rc::clone(&scope);
     }
 
@@ -288,6 +317,7 @@ impl<'ctx> Resolver<'ctx> {
             Some(parent) => parent.upgrade().unwrap(),
             None => bug!("the scope parent is empty, can't leave the scope"),
         };
+        self.scope_level -= 1;
         self.scope = Rc::clone(&parent);
     }
 

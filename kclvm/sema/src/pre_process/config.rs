@@ -1,3 +1,4 @@
+use crate::info::is_private_field;
 use indexmap::{IndexMap, IndexSet};
 use kclvm_ast::walker::MutSelfMutWalker;
 use kclvm_ast::{ast, walk_if_mut};
@@ -110,7 +111,9 @@ impl ConfigMergeTransformer {
             for (module_id, module) in modules.iter_mut().enumerate() {
                 for (i, stmt) in module.body.iter_mut().enumerate() {
                     match &mut stmt.node {
-                        ast::Stmt::Unification(unification_stmt) => {
+                        ast::Stmt::Unification(unification_stmt)
+                            if !unification_stmt.target.node.names.is_empty() =>
+                        {
                             let name = &unification_stmt.target.node.names[0];
                             match name_declaration_mapping.get_mut(name) {
                                 Some(declarations) => declarations.push((
@@ -138,12 +141,18 @@ impl ConfigMergeTransformer {
                                     if target.node.names.len() == 1 {
                                         let name = &target.node.names[0];
                                         match name_declaration_mapping.get_mut(name) {
-                                            Some(declarations) => declarations.push((
-                                                module.filename.to_string(),
-                                                module_id,
-                                                i,
-                                                ConfigMergeKind::Override,
-                                            )),
+                                            Some(declarations) => {
+                                                // A hidden var is mutable.
+                                                if is_private_field(name) {
+                                                    declarations.clear();
+                                                    declarations.push((
+                                                        module.filename.to_string(),
+                                                        module_id,
+                                                        i,
+                                                        ConfigMergeKind::Override,
+                                                    ))
+                                                }
+                                            }
                                             None => {
                                                 name_declaration_mapping.insert(
                                                     name.to_string(),

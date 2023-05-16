@@ -68,7 +68,7 @@ fn build_expr_from_string(value: &str) -> Option<ast::NodeRef<ast::Expr>> {
                 Some(ast::NodeRef::new(ast::Node::node_with_pos(
                     ast::Expr::StringLit(ast::StringLit {
                         is_long_string: false,
-                        raw_value: format!("{:?}", value),
+                        raw_value: format!("{value:?}"),
                         value: value.to_string(),
                     }),
                     e.pos(),
@@ -147,12 +147,12 @@ pub fn apply_override_on_module(
 ///     field_value: "10".to_string(),
 ///     action: ast::OverrideAction::CreateOrUpdate,
 /// }
-pub(crate) fn parse_override_spec(spec: &str) -> Result<ast::OverrideSpec> {
+pub fn parse_override_spec(spec: &str) -> Result<ast::OverrideSpec> {
     if spec.contains('=') {
         // Create or update the override value.
         let split_values = spec.splitn(2, '=').collect::<Vec<&str>>();
         let path = split_values
-            .get(0)
+            .first()
             .ok_or_else(|| invalid_spec_error(spec))?;
         let field_value = split_values
             .get(1)

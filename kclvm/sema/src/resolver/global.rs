@@ -12,8 +12,9 @@ use kclvm_ast::ast;
 use kclvm_ast::walker::MutSelfTypedResultWalker;
 use kclvm_error::*;
 
+use super::doc::parse_doc_string;
 use super::scope::{ScopeObject, ScopeObjectKind};
-use crate::resolver::pos::GetPos;
+use kclvm_ast::pos::GetPos;
 
 const MAX_SCOPE_SCAN_COUNT: usize = 3;
 pub const MIXIN_SUFFIX: &str = "Mixin";
@@ -60,11 +61,12 @@ impl<'ctx> Resolver<'ctx> {
                             );
                             continue;
                         }
+                        let parsed_doc = parse_doc_string(&doc);
                         let schema_ty = SchemaType {
                             name: name.to_string(),
                             pkgpath: self.ctx.pkgpath.clone(),
                             filename: self.ctx.filename.clone(),
-                            doc: doc.to_string(),
+                            doc: parsed_doc.summary.clone(),
                             is_instance: false,
                             is_mixin,
                             is_protocol,
@@ -74,7 +76,7 @@ impl<'ctx> Resolver<'ctx> {
                             mixins: vec![],
                             attrs: IndexMap::default(),
                             func: Box::new(FunctionType {
-                                doc: doc.to_string(),
+                                doc: parsed_doc.summary.clone(),
                                 params: vec![],
                                 self_ty: None,
                                 return_ty: Rc::new(Type::VOID),
@@ -90,9 +92,10 @@ impl<'ctx> Resolver<'ctx> {
                                 name: name.to_string(),
                                 start,
                                 end,
-                                ty: Rc::new(Type::schema(schema_ty)),
+                                ty: Rc::new(Type::schema(schema_ty.clone())),
                                 kind: ScopeObjectKind::Definition,
                                 used: false,
+                                doc: Some(parsed_doc.summary.clone()),
                             },
                         )
                     }
@@ -134,9 +137,10 @@ impl<'ctx> Resolver<'ctx> {
                                     name: schema_ty.name.to_string(),
                                     start,
                                     end,
-                                    ty: Rc::new(Type::schema(schema_ty)),
+                                    ty: Rc::new(Type::schema(schema_ty.clone())),
                                     kind: ScopeObjectKind::Definition,
                                     used: false,
+                                    doc: Some(schema_ty.doc),
                                 },
                             )
                         }
@@ -211,6 +215,11 @@ impl<'ctx> Resolver<'ctx> {
         unique_check: bool,
     ) {
         for target in &assign_stmt.targets {
+            if target.node.names.is_empty() {
+                self.handler
+                    .add_compile_error("missing target in the assign statement", target.get_pos());
+                continue;
+            }
             let name = &target.node.names[0];
             let (start, end) = target.get_span_pos();
             if self.contains_object(name) && !is_private_field(name) && unique_check {
@@ -237,7 +246,7 @@ impl<'ctx> Resolver<'ctx> {
                                 .start
                                 .clone(),
                             style: Style::LineAndColumn,
-                            message: format!("The variable '{}' is declared here firstly", name),
+                            message: format!("The variable '{}' is declared here", name),
                             note: Some(format!(
                                 "change the variable name to '_{}' to make it mutable",
                                 name
@@ -269,7 +278,7 @@ impl<'ctx> Resolver<'ctx> {
                                 Message {
                                     pos: obj.start.clone(),
                                     style: Style::LineAndColumn,
-                                    message: format!("expect {}", obj.ty.ty_str()),
+                                    message: format!("expected {}", obj.ty.ty_str()),
                                     note: None,
                                 },
                             ],
@@ -291,6 +300,7 @@ impl<'ctx> Resolver<'ctx> {
                     ty,
                     kind: ScopeObjectKind::Variable,
                     used: false,
+                    doc: None,
                 },
             );
         }
@@ -302,6 +312,9 @@ impl<'ctx> Resolver<'ctx> {
         unique_check: bool,
     ) {
         let target = &unification_stmt.target;
+        if target.node.names.is_empty() {
+            return;
+        }
         let name = &target.node.names[0];
         let (start, end) = target.get_span_pos();
         if self.contains_object(name) && !is_private_field(name) && unique_check {
@@ -328,7 +341,7 @@ impl<'ctx> Resolver<'ctx> {
                             .start
                             .clone(),
                         style: Style::LineAndColumn,
-                        message: format!("The variable '{}' is declared here firstly", name),
+                        message: format!("The variable '{}' is declared here", name),
                         note: Some(format!(
                             "change the variable name to '_{}' to make it mutable",
                             name
@@ -348,6 +361,7 @@ impl<'ctx> Resolver<'ctx> {
                 ty,
                 kind: ScopeObjectKind::Variable,
                 used: false,
+                doc: None,
             },
         );
     }
@@ -573,8 +587,10 @@ impl<'ctx> Resolver<'ctx> {
                     line: pos.line,
                     column: pos.column,
                 },
+                doc: None,
             },
         );
+        let parsed_doc = parse_doc_string(&schema_stmt.doc);
         for stmt in &schema_stmt.body {
             let pos = stmt.get_pos();
             let (name, ty, is_optional, has_default) = match &stmt.node {
@@ -608,6 +624,13 @@ impl<'ctx> Resolver<'ctx> {
             };
             if !attr_obj_map.contains_key(&name) {
                 let existed_attr = parent_ty.as_ref().and_then(|ty| ty.get_obj_of_attr(&name));
+                let doc_str = parsed_doc.attrs.iter().find_map(|attr| {
+                    if attr.name == name {
+                        Some(attr.desc.join("\n"))
+                    } else {
+                        None
+                    }
+                });
                 attr_obj_map.insert(
                     name.clone(),
                     SchemaAttr {
@@ -615,6 +638,7 @@ impl<'ctx> Resolver<'ctx> {
                         has_default,
                         ty: ty.clone(),
                         pos: pos.clone(),
+                        doc: doc_str,
                     },
                 );
             }
@@ -664,7 +688,7 @@ impl<'ctx> Resolver<'ctx> {
                 self.handler.add_error(
                     ErrorKind::NameError,
                     &[Message {
-                        pos: pos.clone(),
+                        pos: mixin.get_pos(),
                         style: Style::LineAndColumn,
                         message: format!(
                             "a valid mixin name should end with 'Mixin', got '{}'",
@@ -687,7 +711,10 @@ impl<'ctx> Resolver<'ctx> {
                         &[Message {
                             pos: mixin.get_pos(),
                             style: Style::LineAndColumn,
-                            message: format!("illegal schema mixin object type '{}'", ty.ty_str()),
+                            message: format!(
+                                "illegal schema mixin object type, expected mixin, got '{}'",
+                                ty.ty_str()
+                            ),
                             note: None,
                         }],
                     );
@@ -756,7 +783,7 @@ impl<'ctx> Resolver<'ctx> {
             name: schema_stmt.name.node.clone(),
             pkgpath: self.ctx.pkgpath.clone(),
             filename: self.ctx.filename.clone(),
-            doc: schema_stmt.doc.clone(),
+            doc: parsed_doc.summary.clone(),
             is_instance: false,
             is_mixin: schema_stmt.is_mixin,
             is_protocol: schema_stmt.is_protocol,
@@ -766,7 +793,7 @@ impl<'ctx> Resolver<'ctx> {
             mixins: mixin_types,
             attrs: attr_obj_map,
             func: Box::new(FunctionType {
-                doc: schema_stmt.doc.clone(),
+                doc: parsed_doc.summary.clone(),
                 params,
                 self_ty: None,
                 return_ty: Rc::new(Type::ANY),

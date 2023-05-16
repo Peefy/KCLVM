@@ -28,17 +28,9 @@ pub use error::*;
 /// A handler deals with errors and other compiler output.
 /// Certain errors (error, bug) may cause immediate exit,
 /// others log errors for later reporting.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Handler {
     pub diagnostics: IndexSet<Diagnostic>,
-}
-
-impl Default for Handler {
-    fn default() -> Self {
-        Self {
-            diagnostics: Default::default(),
-        }
-    }
 }
 
 impl Handler {
@@ -72,31 +64,18 @@ impl Handler {
         Ok(self.has_errors())
     }
 
-    /// Emit all diagnostics but do not abort and return the error json string format.
-    #[inline]
-    pub fn alert_if_any_errors(&self) -> Result<(), String> {
-        if self.has_errors() {
-            for diag in &self.diagnostics {
-                if !diag.messages.is_empty() {
-                    let pos = diag.messages[0].pos.clone();
-
-                    let mut panic_info = PanicInfo::from(diag.messages[0].message.clone());
-                    panic_info.kcl_file = pos.filename.clone();
-                    panic_info.kcl_line = pos.line as i32;
-                    panic_info.kcl_col = pos.column.unwrap_or(0) as i32;
-
-                    if diag.messages.len() >= 2 {
-                        let pos = diag.messages[1].pos.clone();
-                        panic_info.kcl_config_meta_file = pos.filename.clone();
-                        panic_info.kcl_config_meta_line = pos.line as i32;
-                        panic_info.kcl_config_meta_col = pos.column.unwrap_or(0) as i32;
-                    }
-
-                    return Err(panic_info.to_json_string());
-                }
-            }
+    /// Emit diagnostic to string.
+    pub fn emit_to_string(&mut self) -> Result<String> {
+        let sess = Session::default();
+        for diag in &self.diagnostics {
+            sess.add_err(diag.clone())?;
         }
-        Ok(())
+        let errors = sess.emit_all_diags_into_string()?;
+        let mut error_strings = vec![];
+        for error in errors {
+            error_strings.push(error?);
+        }
+        Ok(error_strings.join("\n"))
     }
 
     /// Emit all diagnostics and abort if has any errors.
@@ -107,16 +86,17 @@ impl Handler {
                     std::process::exit(1);
                 }
             }
-            Err(err) => self.bug(&format!("{}", err.to_string())),
+            Err(err) => self.bug(&format!("{err}")),
         }
     }
 
     /// Construct a parse error and put it into the handler diagnostic buffer
     pub fn add_syntex_error(&mut self, msg: &str, pos: Position) -> &mut Self {
-        let message = format!("Invalid syntax: {}", msg);
+        let message = format!("Invalid syntax: {msg}");
         let diag = Diagnostic::new_with_code(
             Level::Error,
             &message,
+            None,
             pos,
             Some(DiagnosticId::Error(E1001.kind)),
         );
@@ -130,6 +110,7 @@ impl Handler {
         let diag = Diagnostic::new_with_code(
             Level::Error,
             msg,
+            None,
             pos,
             Some(DiagnosticId::Error(E2G22.kind)),
         );
@@ -143,6 +124,7 @@ impl Handler {
         let diag = Diagnostic::new_with_code(
             Level::Error,
             msg,
+            None,
             pos,
             Some(DiagnosticId::Error(E2L23.kind)),
         );
@@ -221,9 +203,17 @@ impl Handler {
         (errs, warnings)
     }
 
-    /// Store a diagnostics
+    /// Store a diagnostics into the handler.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use kclvm_error::*;
+    /// let mut handler = Handler::default();
+    /// handler.add_diagnostic(Diagnostic::new_with_code(Level::Error, "error message", None, Position::dummy_pos(), Some(DiagnosticId::Error(E1001.kind))));
+    /// ```
     #[inline]
-    fn add_diagnostic(&mut self, diagnostic: Diagnostic) -> &mut Self {
+    pub fn add_diagnostic(&mut self, diagnostic: Diagnostic) -> &mut Self {
         self.diagnostics.insert(diagnostic);
 
         self
@@ -232,32 +222,64 @@ impl Handler {
 
 impl From<PanicInfo> for Diagnostic {
     fn from(panic_info: PanicInfo) -> Self {
-        let mut diag = Diagnostic::new_with_code(
-            Level::Error,
-            if panic_info.kcl_arg_msg.is_empty() {
-                &panic_info.message
-            } else {
-                &panic_info.kcl_arg_msg
-            },
-            Position {
-                filename: panic_info.kcl_file.clone(),
-                line: panic_info.kcl_line as u64,
-                column: None,
-            },
-            Some(DiagnosticId::Error(E3M38.kind)),
-        );
+        let panic_msg = if panic_info.kcl_arg_msg.is_empty() {
+            &panic_info.message
+        } else {
+            &panic_info.kcl_arg_msg
+        };
+
+        let mut diag = if panic_info.backtrace.is_empty() {
+            Diagnostic::new_with_code(
+                Level::Error,
+                &panic_msg,
+                None,
+                Position {
+                    filename: panic_info.kcl_file.clone(),
+                    line: panic_info.kcl_line as u64,
+                    column: None,
+                },
+                None,
+            )
+        } else {
+            let mut backtrace_msg = "backtrace:\n".to_string();
+            let mut backtrace = panic_info.backtrace.clone();
+            backtrace.reverse();
+            for (index, frame) in backtrace.iter().enumerate() {
+                backtrace_msg.push_str(&format!(
+                    "\t{index}: {}\n\t\tat {}:{}",
+                    frame.func, frame.file, frame.line
+                ));
+                if frame.col != 0 {
+                    backtrace_msg.push_str(&format!(":{}", frame.col))
+                }
+                backtrace_msg.push_str("\n")
+            }
+            Diagnostic::new_with_code(
+                Level::Error,
+                &panic_msg,
+                Some(&backtrace_msg),
+                Position {
+                    filename: panic_info.kcl_file.clone(),
+                    line: panic_info.kcl_line as u64,
+                    column: None,
+                },
+                None,
+            )
+        };
+
         if panic_info.kcl_config_meta_file.is_empty() {
             return diag;
         }
         let mut config_meta_diag = Diagnostic::new_with_code(
             Level::Error,
             &panic_info.kcl_config_meta_arg_msg,
+            None,
             Position {
                 filename: panic_info.kcl_config_meta_file.clone(),
                 line: panic_info.kcl_config_meta_line as u64,
                 column: Some(panic_info.kcl_config_meta_col as u64),
             },
-            Some(DiagnosticId::Error(E3M38.kind)),
+            None,
         );
         config_meta_diag.messages.append(&mut diag.messages);
         config_meta_diag
@@ -276,6 +298,9 @@ pub enum ParseError {
         span: Span,
     },
 }
+
+/// A single string error.
+pub struct StringError(pub String);
 
 impl ParseError {
     /// New a unexpected token parse error with span and token information.
@@ -296,11 +321,29 @@ impl ParseError {
     }
 }
 
+impl ParseError {
+    /// Convert a parse error into a error diagnostic.
+    pub fn into_diag(self, sess: &Session) -> Result<Diagnostic> {
+        let span = match self {
+            ParseError::UnexpectedToken { span, .. } => span,
+            ParseError::Message { span, .. } => span,
+        };
+        let loc = sess.sm.lookup_char_pos(span.lo());
+        Ok(Diagnostic::new_with_code(
+            Level::Error,
+            &self.to_string(),
+            None,
+            loc.into(),
+            Some(DiagnosticId::Error(ErrorKind::InvalidSyntax)),
+        ))
+    }
+}
+
 impl ToString for ParseError {
     fn to_string(&self) -> String {
         match self {
             ParseError::UnexpectedToken { expected, got, .. } => {
-                format!("unexpected one of {expected:?} got {got}")
+                format!("expected one of {expected:?} got {got}")
             }
             ParseError::Message { message, .. } => message.to_string(),
         }
@@ -311,18 +354,12 @@ impl SessionDiagnostic for ParseError {
     fn into_diagnostic(self, sess: &Session) -> Result<DiagnosticTrait<DiagnosticStyle>> {
         let mut diag = DiagnosticTrait::<DiagnosticStyle>::new();
         diag.append_component(Box::new(Label::Error(E1001.code.to_string())));
-        diag.append_component(Box::new(": invalid syntax".to_string()));
+        diag.append_component(Box::new(": invalid syntax\n".to_string()));
         match self {
-            ParseError::UnexpectedToken {
-                expected,
-                got,
-                span,
-            } => {
+            ParseError::UnexpectedToken { span, .. } => {
                 let code_snippet = CodeSnippet::new(span, Arc::clone(&sess.sm));
                 diag.append_component(Box::new(code_snippet));
-                diag.append_component(Box::new(format!(
-                    " expected one of {expected:?} got {got}\n"
-                )));
+                diag.append_component(Box::new(format!(" {}\n", self.to_string())));
                 Ok(diag)
             }
             ParseError::Message { message, span } => {
@@ -341,28 +378,26 @@ impl SessionDiagnostic for Diagnostic {
         match self.code {
             Some(id) => match id {
                 DiagnosticId::Error(error) => {
-                    diag.append_component(Box::new(Label::Error(E2L23.code.to_string())));
-                    diag.append_component(Box::new(format!(": {}", error.name())));
+                    diag.append_component(Box::new(Label::Error(error.code())));
+                    diag.append_component(Box::new(format!(": {}\n", error.name())));
                 }
                 DiagnosticId::Warning(warning) => {
-                    diag.append_component(Box::new(Label::Warning(W1001.code.to_string())));
-                    diag.append_component(Box::new(format!(": {}", warning.name())));
+                    diag.append_component(Box::new(Label::Warning(warning.code())));
+                    diag.append_component(Box::new(format!(": {}\n", warning.name())));
                 }
             },
             None => match self.level {
                 Level::Error => {
-                    diag.append_component(Box::new(Label::Error(E2L23.code.to_string())));
+                    diag.append_component(Box::new(format!("{}\n", ErrorKind::EvaluationError)));
                 }
                 Level::Warning => {
-                    diag.append_component(Box::new(Label::Warning(W1001.code.to_string())));
+                    diag.append_component(Box::new(format!("{}\n", WarningKind::CompilerWarning)));
                 }
                 Level::Note => {
                     diag.append_component(Box::new(Label::Note));
                 }
             },
         }
-        // Append a new line.
-        diag.append_component(Box::new(String::from("\n")));
         for msg in &self.messages {
             match Session::new_with_file_and_code(&msg.pos.filename, None) {
                 Ok(sess) => {
@@ -379,10 +414,17 @@ impl SessionDiagnostic for Diagnostic {
                                     origin: Some(&msg.pos.filename),
                                     annotations: vec![SourceAnnotation {
                                         range: match msg.pos.column {
-                                            Some(column) => {
-                                                (column as usize, (column + 1) as usize)
+                                            Some(column) if content.len() >= 1 => {
+                                                let column = column as usize;
+                                                // If the position exceeds the length of the content,
+                                                // put the annotation at the end of the line.
+                                                if column >= content.len() {
+                                                    (content.len() - 1, content.len())
+                                                } else {
+                                                    (column, column + 1)
+                                                }
                                             }
-                                            None => (0, 0),
+                                            _ => (0, 0),
                                         },
                                         label: &msg.message,
                                         annotation_type: AnnotationType::Error,
@@ -407,11 +449,20 @@ impl SessionDiagnostic for Diagnostic {
             };
             if let Some(note) = &msg.note {
                 diag.append_component(Box::new(Label::Note));
-                diag.append_component(Box::new(format!(": {}\n", note)));
+                diag.append_component(Box::new(format!(": {note}\n")));
             }
             // Append a new line.
             diag.append_component(Box::new(String::from("\n")));
         }
+        Ok(diag)
+    }
+}
+
+impl SessionDiagnostic for StringError {
+    fn into_diagnostic(self, _: &Session) -> Result<DiagnosticTrait<DiagnosticStyle>> {
+        let mut diag = DiagnosticTrait::<DiagnosticStyle>::new();
+        diag.append_component(Box::new(Label::Error(E3M38.code.to_string())));
+        diag.append_component(Box::new(format!(": {}\n", self.0)));
         Ok(diag)
     }
 }

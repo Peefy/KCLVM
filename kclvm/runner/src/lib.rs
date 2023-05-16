@@ -2,17 +2,16 @@ use std::{collections::HashMap, path::Path, sync::Arc, time::SystemTime};
 
 use assembler::KclvmLibAssembler;
 use command::Command;
-use compiler_base_session::Session;
 use kclvm_ast::{
     ast::{Module, Program},
     MAIN_PKG,
 };
-use kclvm_config::modfile::KCL_MOD_PATH_ENV;
-use kclvm_parser::load_program;
+use kclvm_driver::canonicalize_input_files;
+use kclvm_error::{Diagnostic, Handler};
+use kclvm_parser::{load_program, ParseSession};
 use kclvm_query::apply_overrides;
 use kclvm_runtime::{PanicInfo, ValueRef};
 use kclvm_sema::resolver::resolve_program;
-use kclvm_utils::path::PathPrefix;
 pub use runner::ExecProgramArgs;
 use runner::{ExecProgramResult, KclvmRunner, KclvmRunnerOptions};
 use tempfile::tempdir;
@@ -51,73 +50,67 @@ pub mod tests;
 ///
 /// At last, KclvmRunner will be constructed and call method "run" to execute the kcl program.
 ///
+/// **Note that it is not thread safe.**
+///
 /// # Examples
 ///
 /// ```
 /// use kclvm_runner::{exec_program, ExecProgramArgs};
+/// use kclvm_parser::ParseSession;
 /// use std::sync::Arc;
-/// use compiler_base_session::Session;
 ///
 /// // Create sessions
-/// let sess = Arc::new(Session::default());
+/// let sess = Arc::new(ParseSession::default());
 /// // Get default args
 /// let mut args = ExecProgramArgs::default();
 /// args.k_filename_list = vec!["./src/test_datas/init_check_order_0/main.k".to_string()];
 ///
 /// // Resolve ast, generate libs, link libs and execute.
 /// // Result is the kcl in json format.
-/// let result = exec_program(sess, &args, 0).unwrap();
+/// let result = exec_program(sess, &args).unwrap();
 /// ```
 pub fn exec_program(
-    sess: Arc<Session>,
+    sess: Arc<ParseSession>,
     args: &ExecProgramArgs,
-    plugin_agent: u64,
 ) -> Result<ExecProgramResult, String> {
     // parse args from json string
     let opts = args.get_load_program_options();
     let k_files = &args.k_filename_list;
-    let mut kcl_paths = Vec::<String>::new();
     let work_dir = args.work_dir.clone().unwrap_or_default();
-
-    // Join work_path with k_file_path
-    for (_, file) in k_files.iter().enumerate() {
-        // If the input file or path is a relative path and it is not a absolute path in the KCL module VFS,
-        // join with the work directory path and convert it to a absolute path.
-        if !file.starts_with(KCL_MOD_PATH_ENV) && !Path::new(file).is_absolute() {
-            match Path::new(&work_dir).join(file).canonicalize() {
-                Ok(path) => kcl_paths.push(String::from(path.adjust_canonicalization())),
-                Err(_) => {
-                    return Err(PanicInfo::from_string(&format!(
-                        "Cannot find the kcl file, please check whether the file path {}",
-                        file
-                    ))
-                    .to_json_string())
-                }
-            }
-        } else {
-            kcl_paths.push(String::from(file))
-        }
-    }
+    let kcl_paths = canonicalize_input_files(k_files, work_dir, false)?;
 
     let kcl_paths_str = kcl_paths.iter().map(|s| s.as_str()).collect::<Vec<&str>>();
 
     let mut program = load_program(sess.clone(), kcl_paths_str.as_slice(), Some(opts))?;
 
-    if let Err(err) = apply_overrides(&mut program, &args.overrides, &[], args.print_override_ast) {
+    if let Err(err) = apply_overrides(
+        &mut program,
+        &args.overrides,
+        &[],
+        args.print_override_ast || args.debug > 0,
+    ) {
         return Err(err.to_string());
     }
 
     let start_time = SystemTime::now();
-    let exec_result = execute(sess, program, plugin_agent, args);
+    let exec_result = execute(sess, program, args);
     let escape_time = match SystemTime::now().duration_since(start_time) {
         Ok(dur) => dur.as_secs_f32(),
         Err(err) => return Err(err.to_string()),
     };
-    let mut result = ExecProgramResult::default();
-    result.escaped_time = escape_time.to_string();
+    let mut result = ExecProgramResult {
+        escaped_time: escape_time.to_string(),
+        ..Default::default()
+    };
     // Exec result is a JSON or YAML string.
     let exec_result = match exec_result {
-        Ok(res) => res,
+        Ok(res) => {
+            if res.is_empty() {
+                return Ok(result);
+            } else {
+                res
+            }
+        }
         Err(res) => {
             if res.is_empty() {
                 return Ok(result);
@@ -130,7 +123,10 @@ pub fn exec_program(
         Ok(v) => v,
         Err(err) => return Err(err.to_string()),
     };
-    let (json_result, yaml_result) = kcl_val.plan();
+    // Filter values with the path selector.
+    let kcl_val = kcl_val.filter_by_path(&args.path_selector)?;
+    // Plan values.
+    let (json_result, yaml_result) = kcl_val.plan(args.sort_keys);
     result.json_result = json_result;
     if !args.disable_yaml_result {
         result.yaml_result = yaml_result;
@@ -164,19 +160,18 @@ pub fn exec_program(
 ///
 /// At last, KclvmRunner will be constructed and call method "run" to execute the kcl program.
 ///
+/// **Note that it is not thread safe.**
+///
 /// # Examples
 ///
 /// ```
 /// use kclvm_runner::{execute, runner::ExecProgramArgs};
-/// use kclvm_parser::load_program;
+/// use kclvm_parser::{load_program, ParseSession};
 /// use kclvm_ast::ast::Program;
 /// use std::sync::Arc;
-/// use compiler_base_session::Session;
 ///
 /// // Create sessions
-/// let sess = Arc::new(Session::default());
-/// // plugin_agent is the address of plugin.
-/// let plugin_agent = 0;
+/// let sess = Arc::new(ParseSession::default());
 /// // Get default args
 /// let args = ExecProgramArgs::default();
 /// let opts = args.get_load_program_options();
@@ -187,17 +182,16 @@ pub fn exec_program(
 ///     
 /// // Resolve ast, generate libs, link libs and execute.
 /// // Result is the kcl in json format.
-/// let result = execute(sess, prog, plugin_agent, &args).unwrap();
+/// let result = execute(sess, prog, &args).unwrap();
 /// ```
 pub fn execute(
-    sess: Arc<Session>,
+    sess: Arc<ParseSession>,
     mut program: Program,
-    plugin_agent: u64,
     args: &ExecProgramArgs,
 ) -> Result<String, String> {
     // Resolve ast
     let scope = resolve_program(&mut program);
-    scope.alert_scope_diagnostics_with_session(sess)?;
+    scope.emit_diagnostics_to_string(sess.0.clone())?;
 
     // Create a temp entry file and the temp dir will be delete automatically
     let temp_dir = tempdir().unwrap();
@@ -222,7 +216,7 @@ pub fn execute(
     let runner = KclvmRunner::new(
         lib_path.as_str(),
         Some(KclvmRunnerOptions {
-            plugin_agent_ptr: plugin_agent,
+            plugin_agent_ptr: args.plugin_agent,
         }),
     );
     let result = runner.run(args);
@@ -234,13 +228,24 @@ pub fn execute(
     remove_file(&lib_path);
     #[cfg(not(target_os = "windows"))]
     clean_tmp_files(&temp_entry_file, &lib_suffix);
-    result
+    // Wrap runtime error into diagnostic style string.
+    result.map_err(|err| {
+        match Handler::default()
+            .add_diagnostic(<PanicInfo as Into<Diagnostic>>::into(PanicInfo::from(err)))
+            .emit_to_string()
+        {
+            Ok(msg) => msg,
+            Err(err) => err.to_string(),
+        }
+    })
 }
 
 /// `execute_module` can directly execute the ast `Module`.
 /// `execute_module` constructs `Program` with default pkg name `MAIN_PKG`,
 /// and calls method `execute` with default `plugin_agent` and `ExecProgramArgs`.
 /// For more information, see doc above method `execute`.
+///
+/// **Note that it is not thread safe.**
 pub fn execute_module(mut m: Module) -> Result<String, String> {
     m.pkg = MAIN_PKG.to_string();
 
@@ -251,14 +256,11 @@ pub fn execute_module(mut m: Module) -> Result<String, String> {
         root: MAIN_PKG.to_string(),
         main: MAIN_PKG.to_string(),
         pkgs,
-        cmd_args: vec![],
-        cmd_overrides: vec![],
     };
 
     execute(
-        Arc::new(Session::default()),
+        Arc::new(ParseSession::default()),
         prog,
-        0,
         &ExecProgramArgs::default(),
     )
 }
@@ -273,8 +275,7 @@ fn clean_tmp_files(temp_entry_file: &String, lib_suffix: &String) {
 #[inline]
 fn remove_file(file: &str) {
     if Path::new(&file).exists() {
-        std::fs::remove_file(&file)
-            .unwrap_or_else(|err| panic!("{} not found, defailts: {}", file, err));
+        std::fs::remove_file(file).unwrap_or_else(|err| panic!("{file} not found, details: {err}"));
     }
 }
 
@@ -283,6 +284,6 @@ fn temp_file(dir: &str) -> String {
     let timestamp = chrono::Local::now().timestamp_nanos();
     let id = std::process::id();
     let file = format!("{}_{}", id, timestamp);
-    std::fs::create_dir_all(dir).unwrap_or_else(|_| panic!("{} not found", dir));
+    std::fs::create_dir_all(dir).unwrap_or_else(|err| panic!("{dir} not found, details: {err}"));
     Path::new(dir).join(file).to_str().unwrap().to_string()
 }

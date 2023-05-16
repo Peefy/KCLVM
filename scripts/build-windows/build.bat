@@ -5,6 +5,7 @@ setlocal
 cd %~dp0
 
 :: install kclvm-cli
+call .\\build_kclvm_dll.bat
 call .\\build_kclvm_cli.bat
 call .\\build_kcl_lsp_server.bat
 
@@ -32,16 +33,8 @@ _output\kclvm-windows\bin\kcl.exe           ..\..\samples\fib.k
 _output\kclvm-windows\bin\kcl.exe           ..\..\samples\hello.k
 _output\kclvm-windows\bin\kcl.exe           ..\..\samples\kubernetes.k
 _output\kclvm-windows\bin\kcl.exe           ..\..\samples\math.k
-_output\kclvm-windows\bin\kclvm-cli.exe run ..\..\samples\hello_plugin.k
 
 _output\kclvm-windows\bin\kclvm-cli.exe run ..\..\samples\fib.k
 _output\kclvm-windows\bin\kclvm-cli.exe run ..\..\samples\hello.k
 _output\kclvm-windows\bin\kclvm-cli.exe run ..\..\samples\kubernetes.k
 _output\kclvm-windows\bin\kclvm-cli.exe run ..\..\samples\math.k
-_output\kclvm-windows\bin\kclvm-cli.exe run ..\..\samples\hello_plugin.k
-
-_output\kclvm-windows\bin\kcl.exe           ..\..\samples\fib.k          --target native 
-_output\kclvm-windows\bin\kcl.exe           ..\..\samples\hello.k        --target native 
-_output\kclvm-windows\bin\kcl.exe           ..\..\samples\kubernetes.k   --target native 
-_output\kclvm-windows\bin\kcl.exe           ..\..\samples\math.k         --target native
-_output\kclvm-windows\bin\kcl.exe           ..\..\samples\hello_plugin.k --target native

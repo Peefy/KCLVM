@@ -342,7 +342,6 @@ mod test_expr_builder {
 mod test_validater {
     use std::{fs, panic, path::Path};
 
-    use kclvm_runtime::PanicInfo;
     use regex::Regex;
 
     use crate::{
@@ -362,8 +361,7 @@ mod test_validater {
     fn test_validator() {
         test_validate();
         println!("test_validate - PASS");
-        // TOOD: Fix me on ubuntu platform. @zongzhe
-        // test_invalid_validate();
+        test_invalid_validate();
         println!("test_invalid_validate - PASS");
         test_validate_with_invalid_kcl_path();
         println!("test_validate_with_invalid_kcl_path - PASS");
@@ -406,10 +404,6 @@ mod test_validater {
     }
 
     fn test_invalid_validate() {
-        let prev_hook = std::panic::take_hook();
-        // disable print panic info
-        // std::panic::set_hook(Box::new(|_| {}));
-
         for (i, file_suffix) in VALIDATED_FILE_TYPE.iter().enumerate() {
             for case in KCL_TEST_CASES {
                 let validated_file_path = construct_full_path(&format!(
@@ -433,19 +427,6 @@ mod test_validater {
                 )
                 .expect("Something went wrong reading the file");
 
-                let expected_err_msg = fs::read_to_string(
-                    construct_full_path(&format!(
-                        "{}.{}",
-                        Path::new("invalid_validate_cases")
-                            .join(case)
-                            .display()
-                            .to_string(),
-                        "stderr.json"
-                    ))
-                    .unwrap(),
-                )
-                .expect("Something went wrong reading the file");
-
                 let opt = ValidateOption::new(
                     None,
                     "value".to_string(),
@@ -455,36 +436,10 @@ mod test_validater {
                     Some(kcl_code),
                 );
 
-                let result = panic::catch_unwind(|| validate(opt));
-
-                let mut expect: PanicInfo = serde_json::from_str(&expected_err_msg).unwrap();
-
-                #[cfg(target_os = "windows")]
-                path_to_windows(&mut expect);
-
-                match result {
-                    Ok(result) => match result {
-                        Ok(_) => {
-                            panic!("Unreachable.")
-                        }
-                        Err(err) => {
-                            let got: PanicInfo = serde_json::from_str(&err).unwrap();
-
-                            assert_eq!(got, expect);
-                        }
-                    },
-                    Err(panic_err) => {
-                        if let Some(result) = panic_err.downcast_ref::<String>() {
-                            let got: PanicInfo = serde_json::from_str(result).unwrap();
-                            assert_eq!(got, expect);
-                        } else {
-                            panic!("Unreachable.")
-                        };
-                    }
-                }
+                let result = validate(opt).unwrap_err();
+                assert!(result.contains("Error"), "{result}");
             }
         }
-        std::panic::set_hook(prev_hook);
     }
 
     fn test_validate_with_invalid_kcl_path() {

@@ -49,11 +49,12 @@ impl<'a> Parser<'a> {
     /// Syntax:
     /// test: if_expr | simple_expr
     pub(crate) fn parse_expr(&mut self) -> NodeRef<Expr> {
+        let token = self.token;
         let operand = self.parse_simple_expr();
 
         // try if expr
         if self.token.is_keyword(kw::If) {
-            return self.parse_if_expr(operand);
+            return self.parse_if_expr(operand, token);
         }
 
         operand
@@ -119,10 +120,20 @@ impl<'a> Parser<'a> {
             }
 
             let op = if use_peek_op {
-                let peek = self.cursor.peek().unwrap();
+                // If no peek is found, a dummy token is returned for error recovery.
+                let peek = match self.cursor.peek() {
+                    Some(peek) => peek,
+                    None => kclvm_ast::token::Token::dummy(),
+                };
                 if self.token.is_keyword(kw::Not) && peek.is_keyword(kw::In) {
                     BinOrCmpOp::Cmp(CmpOp::NotIn)
                 } else if self.token.is_keyword(kw::Is) && peek.is_keyword(kw::Not) {
+                    BinOrCmpOp::Cmp(CmpOp::IsNot)
+                } else if self.token.is_keyword(kw::Not) && peek.is_keyword(kw::Is) {
+                    self.sess.struct_span_error(
+                        "'not is' here is invalid, consider using 'is not'",
+                        self.token.span,
+                    );
                     BinOrCmpOp::Cmp(CmpOp::IsNot)
                 } else {
                     self.sess.struct_token_error(
@@ -132,15 +143,18 @@ impl<'a> Parser<'a> {
                             TokenKind::BinOpEq(BinOpToken::Plus).into(),
                         ],
                         self.token,
-                    )
+                    );
+                    BinOrCmpOp::Cmp(CmpOp::Is)
                 }
             } else {
                 let result = BinOrCmpOp::try_from(self.token);
                 match result {
                     Ok(op) => op,
-                    Err(()) => self
-                        .sess
-                        .struct_token_error(&BinOrCmpOp::all_symbols(), self.token),
+                    Err(()) => {
+                        self.sess
+                            .struct_token_error(&BinOrCmpOp::all_symbols(), self.token);
+                        return x;
+                    }
                 }
             };
 
@@ -186,8 +200,11 @@ impl<'a> Parser<'a> {
     /// Syntax:
     /// if_expr: simple_expr IF simple_expr ELSE test
     /// test: if_expr | simple_expr
-    fn parse_if_expr(&mut self, body: NodeRef<Expr>) -> NodeRef<Expr> {
-        let token = self.token;
+    fn parse_if_expr(
+        &mut self,
+        body: NodeRef<Expr>,
+        token: kclvm_ast::token::Token,
+    ) -> NodeRef<Expr> {
         if self.token.is_keyword(kw::If) {
             self.bump();
             let cond = self.parse_simple_expr();
@@ -199,10 +216,19 @@ impl<'a> Parser<'a> {
                     self.sess.struct_token_loc(token, self.prev_token),
                 ))
             } else {
-                self.sess.struct_token_error(&[kw::Else.into()], self.token)
+                self.sess.struct_token_error(&[kw::Else.into()], self.token);
+                Box::new(Node::node(
+                    Expr::If(IfExpr {
+                        body,
+                        cond,
+                        orelse: self.missing_expr(),
+                    }),
+                    self.sess.struct_token_loc(token, self.prev_token),
+                ))
             }
         } else {
-            self.sess.struct_token_error(&[kw::If.into()], self.token)
+            self.sess.struct_token_error(&[kw::If.into()], self.token);
+            self.missing_expr()
         }
     }
 
@@ -398,7 +424,7 @@ impl<'a> Parser<'a> {
                     if !is_slice && round == 1 {
                         // it just has one round for an array
                         self.sess
-                            .struct_span_error("A list should have only one expr", self.token.span)
+                            .struct_span_error("a list should have only one expr", self.token.span)
                     }
 
                     exprs[expr_index] = Some(self.parse_expr());
@@ -406,7 +432,7 @@ impl<'a> Parser<'a> {
 
                     if exprs_consecutive > 1 {
                         self.sess
-                            .struct_span_error("Consecutive exprs found", self.token.span)
+                            .struct_span_error("consecutive exprs found", self.token.span)
                     }
                 }
             }
@@ -415,7 +441,7 @@ impl<'a> Parser<'a> {
 
         if exprs.len() != 3 {
             self.sess
-                .struct_span_error("A slice should have three exprs", self.token.span)
+                .struct_span_error("a slice should have three exprs", self.token.span)
         }
 
         // RIGHT_BRACKETS
@@ -441,9 +467,16 @@ impl<'a> Parser<'a> {
                 self.sess.struct_token_loc(token, self.prev_token),
             ))
         } else {
+            if exprs[0].is_none() {
+                let token_str: String = self.token.into();
+                self.sess.struct_span_error(
+                    &format!("expected expression got {}", token_str),
+                    self.token.span,
+                )
+            }
             if !(exprs[1].is_none() && exprs[2].is_none()) {
                 self.sess
-                    .struct_span_error("A list should have only one expr", self.token.span)
+                    .struct_span_error("a list should have only one expr", self.token.span)
             }
             Box::new(Node::node(
                 Expr::Subscript(Subscript {
@@ -466,24 +499,24 @@ impl<'a> Parser<'a> {
     /// operand: identifier | number | string | constant | quant_expr | list_expr | list_comp | config_expr | dict_comp | identifier call_suffix | schema_expr | lambda_expr | paren_expr
     fn parse_operand_expr(&mut self) -> NodeRef<Expr> {
         let token = self.token;
+
         // try primary expr
         match self.token.kind {
             TokenKind::Ident(_) => {
                 // None
                 if self.token.is_keyword(kw::None) {
-                    return self.parse_constant_expr(token::None);
+                    self.parse_constant_expr(token::None)
                 }
                 // Undefined
-                if self.token.is_keyword(kw::Undefined) {
+                else if self.token.is_keyword(kw::Undefined) {
                     return self.parse_constant_expr(token::Undefined);
                 }
                 // Bool: True/False
-                if self.token.is_keyword(kw::True) || self.token.is_keyword(kw::False) {
+                else if self.token.is_keyword(kw::True) || self.token.is_keyword(kw::False) {
                     return self.parse_constant_expr(token::Bool);
                 }
-
                 // lambda expression
-                if self.token.is_keyword(kw::Lambda) {
+                else if self.token.is_keyword(kw::Lambda) {
                     self.parse_lambda_expr()
                 // quant expression
                 } else if self.token.is_keyword(kw::Any)
@@ -525,22 +558,29 @@ impl<'a> Parser<'a> {
             TokenKind::Literal(lk) => {
                 // lit expr
                 match lk.kind {
-                    token::LitKind::Bool => self.parse_constant_expr(lk.kind),
+                    token::LitKind::Bool | token::LitKind::None | token::LitKind::Undefined => {
+                        self.parse_constant_expr(lk.kind)
+                    }
                     token::LitKind::Integer | token::LitKind::Float => self.parse_num_expr(lk),
                     token::LitKind::Str { .. } => self.parse_str_expr(lk),
                     // Note: None and Undefined are handled in ident, skip handle them here.
-                    _ => self.sess.struct_token_error(
-                        &[
-                            token::LitKind::Bool.into(),
-                            token::LitKind::Integer.into(),
-                            token::LitKind::Str {
-                                is_long_string: false,
-                                is_raw: false,
-                            }
-                            .into(),
-                        ],
-                        self.token,
-                    ),
+                    _ => {
+                        self.sess.struct_token_error(
+                            &[
+                                token::LitKind::None.into(),
+                                token::LitKind::Undefined.into(),
+                                token::LitKind::Bool.into(),
+                                token::LitKind::Integer.into(),
+                                token::LitKind::Str {
+                                    is_long_string: false,
+                                    is_raw: false,
+                                }
+                                .into(),
+                            ],
+                            self.token,
+                        );
+                        self.missing_expr()
+                    }
                 }
             }
             TokenKind::OpenDelim(dt) => {
@@ -549,23 +589,35 @@ impl<'a> Parser<'a> {
                     // paren expr
                     DelimToken::Paren => self.parse_paren_expr(),
                     // list expr or list comp
-                    DelimToken::Bracket => self.parse_list_expr(),
+                    DelimToken::Bracket => self.parse_list_expr(true),
                     // dict expr or dict comp
                     DelimToken::Brace => self.parse_config_expr(),
-                    _ => self.sess.struct_token_error(
-                        &[
-                            TokenKind::OpenDelim(DelimToken::Paren).into(),
-                            TokenKind::OpenDelim(DelimToken::Bracket).into(),
-                            TokenKind::OpenDelim(DelimToken::Brace).into(),
-                        ],
-                        self.token,
-                    ),
+                    _ => {
+                        self.sess.struct_token_error(
+                            &[
+                                TokenKind::OpenDelim(DelimToken::Paren).into(),
+                                TokenKind::OpenDelim(DelimToken::Bracket).into(),
+                                TokenKind::OpenDelim(DelimToken::Brace).into(),
+                            ],
+                            self.token,
+                        );
+                        self.missing_expr()
+                    }
                 }
             }
-            _ => self.sess.struct_token_error(
-                &[TokenKind::ident_value(), TokenKind::literal_value()],
-                self.token,
-            ),
+            _ => {
+                self.sess.struct_token_error(
+                    &[
+                        TokenKind::ident_value(),
+                        TokenKind::literal_value(),
+                        TokenKind::OpenDelim(DelimToken::Paren).into(),
+                        TokenKind::OpenDelim(DelimToken::Bracket).into(),
+                        TokenKind::OpenDelim(DelimToken::Brace).into(),
+                    ],
+                    self.token,
+                );
+                self.missing_expr()
+            }
         }
     }
 
@@ -601,7 +653,8 @@ impl<'a> Parser<'a> {
                     QuantOperation::Map.into(),
                 ],
                 self.token,
-            )
+            );
+            return self.missing_expr();
         };
         self.bump();
 
@@ -727,7 +780,8 @@ impl<'a> Parser<'a> {
                             kw::Filter.into(),
                         ],
                         self.token,
-                    )
+                    );
+                    self.missing_expr()
                 } else {
                     // identifier
                     self.parse_identifier_expr()
@@ -738,46 +792,61 @@ impl<'a> Parser<'a> {
                 match lk.kind {
                     token::LitKind::Str { .. } => self.parse_str_expr(lk),
                     // Note: None and Undefined are handled in ident, skip handle them here.
-                    _ => self.sess.struct_token_error(
-                        &[token::LitKind::Str {
-                            is_long_string: false,
-                            is_raw: false,
-                        }
-                        .into()],
-                        self.token,
-                    ),
+                    _ => {
+                        self.sess.struct_token_error(
+                            &[token::LitKind::Str {
+                                is_long_string: false,
+                                is_raw: false,
+                            }
+                            .into()],
+                            self.token,
+                        );
+                        self.missing_expr()
+                    }
                 }
             }
             TokenKind::OpenDelim(dt) => {
                 // list expr, dict expr, paren expr
                 match dt {
                     // list expr or list comp
-                    DelimToken::Bracket => self.parse_list_expr(),
+                    DelimToken::Bracket => self.parse_list_expr(true),
                     // dict expr or dict comp
                     DelimToken::Brace => self.parse_config_expr(),
-                    _ => self.sess.struct_token_error(
-                        &[
-                            TokenKind::OpenDelim(DelimToken::Bracket).into(),
-                            TokenKind::OpenDelim(DelimToken::Brace).into(),
-                        ],
-                        self.token,
-                    ),
+                    _ => {
+                        self.sess.struct_token_error(
+                            &[
+                                TokenKind::OpenDelim(DelimToken::Bracket).into(),
+                                TokenKind::OpenDelim(DelimToken::Brace).into(),
+                            ],
+                            self.token,
+                        );
+                        self.missing_expr()
+                    }
                 }
             }
-            _ => self.sess.struct_token_error(
-                &[TokenKind::ident_value(), TokenKind::literal_value()],
-                self.token,
-            ),
+            _ => {
+                self.sess.struct_token_error(
+                    &[TokenKind::ident_value(), TokenKind::literal_value()],
+                    self.token,
+                );
+                self.missing_expr()
+            }
         }
     }
 
     /// Syntax:
     /// list_expr: LEFT_BRACKETS [list_items | NEWLINE _INDENT list_items _DEDENT] RIGHT_BRACKETS
     /// list_comp: LEFT_BRACKETS (expr comp_clause+ | NEWLINE _INDENT expr comp_clause+ _DEDENT) RIGHT_BRACKETS
-    fn parse_list_expr(&mut self) -> NodeRef<Expr> {
-        let token = self.token;
-        // LEFT_BRACKETS
-        self.bump();
+    pub(crate) fn parse_list_expr(&mut self, bump_left_brackets: bool) -> NodeRef<Expr> {
+        // List expr start token
+        let token = if bump_left_brackets {
+            // LEFT_BRACKETS
+            let token = self.token;
+            self.bump();
+            token
+        } else {
+            self.prev_token
+        };
 
         // try RIGHT_BRACKETS: empty config
         if let TokenKind::CloseDelim(DelimToken::Bracket) = self.token.kind {
@@ -797,6 +866,7 @@ impl<'a> Parser<'a> {
             if self.token.kind == TokenKind::Indent {
                 self.bump();
             } else if self.token.kind == TokenKind::CloseDelim(DelimToken::Bracket) {
+                // bump bracket close delim token `]`
                 self.bump();
                 return Box::new(Node::node(
                     Expr::List(ListExpr {
@@ -806,15 +876,24 @@ impl<'a> Parser<'a> {
                     self.sess.struct_token_loc(token, self.prev_token),
                 ));
             } else {
+                // If we don't find the indentation, skip and parse the next statement.
                 self.sess
-                    .struct_token_error(&[TokenKind::Indent.into()], self.token)
+                    .struct_token_error(&[TokenKind::Indent.into()], self.token);
+                return Box::new(Node::node(
+                    Expr::List(ListExpr {
+                        elts: vec![],
+                        ctx: ExprContext::Load,
+                    }),
+                    self.sess.struct_token_loc(token, self.token),
+                ));
             }
             true
         } else {
             false
         };
 
-        let items = self.parse_list_items();
+        let item_start_token = self.token;
+        let items = self.parse_list_items(has_newline);
         let generators = self.parse_comp_clauses();
 
         // _DEDENT
@@ -841,17 +920,41 @@ impl<'a> Parser<'a> {
 
         if !generators.is_empty() {
             if items.len() > 1 {
-                self.sess
-                    .struct_span_error("List multiple items found", self.token.span)
+                self.sess.struct_span_error(
+                    &format!(
+                        "multiple list comp clause expression found: expected 1, got {}",
+                        items.len()
+                    ),
+                    item_start_token.span,
+                );
+                Box::new(Node::node(
+                    Expr::ListComp(ListComp {
+                        elt: items[0].clone(),
+                        generators,
+                    }),
+                    self.sess.struct_token_loc(token, self.prev_token),
+                ))
+            } else if items.len() == 1 {
+                Box::new(Node::node(
+                    Expr::ListComp(ListComp {
+                        elt: items[0].clone(),
+                        generators,
+                    }),
+                    self.sess.struct_token_loc(token, self.prev_token),
+                ))
+            } else {
+                self.sess.struct_span_error(
+                    "missing list comp clause expression",
+                    item_start_token.span,
+                );
+                Box::new(Node::node(
+                    Expr::List(ListExpr {
+                        elts: items,
+                        ctx: ExprContext::Load,
+                    }),
+                    self.sess.struct_token_loc(token, self.prev_token),
+                ))
             }
-
-            Box::new(Node::node(
-                Expr::ListComp(ListComp {
-                    elt: items[0].clone(),
-                    generators,
-                }),
-                self.sess.struct_token_loc(token, self.prev_token),
-            ))
         } else {
             Box::new(Node::node(
                 Expr::List(ListExpr {
@@ -865,40 +968,48 @@ impl<'a> Parser<'a> {
 
     /// Syntax:
     /// list_items: expr ((COMMA [NEWLINE] | NEWLINE) expr)* [COMMA] [NEWLINE]
-    pub(crate) fn parse_list_items(&mut self) -> Vec<NodeRef<Expr>> {
-        if let TokenKind::CloseDelim(DelimToken::Bracket) = self.token.kind {
+    pub(crate) fn parse_list_items(&mut self, has_newline: bool) -> Vec<NodeRef<Expr>> {
+        let is_terminator = |token: &kclvm_ast::token::Token| match &token.kind {
+            TokenKind::CloseDelim(DelimToken::Bracket) | TokenKind::Dedent | TokenKind::Eof => true,
+            TokenKind::Newline if !has_newline => true,
+            _ => token.is_keyword(kw::For),
+        };
+
+        if is_terminator(&self.token) {
             return Vec::new();
         }
 
         let mut items = vec![self.parse_list_item()];
+
         if let TokenKind::Comma = self.token.kind {
             self.bump();
         }
-        self.skip_newlines();
-
-        loop {
-            if matches!(
-                self.token.kind,
-                TokenKind::CloseDelim(DelimToken::Bracket) | TokenKind::Dedent
-            ) {
-                break;
-            }
-            if self.token.is_keyword(kw::For) {
-                break;
-            }
-
-            if let TokenKind::Comma = self.token.kind {
-                self.bump();
-            }
-            self.skip_newlines();
-
-            items.push(self.parse_list_item());
-            if let TokenKind::Comma = self.token.kind {
-                self.bump();
-            }
+        if has_newline {
             self.skip_newlines();
         }
+        loop {
+            let marker = self.mark();
+            if is_terminator(&self.token) {
+                break;
+            }
 
+            let item = self.parse_list_item();
+            if matches!(item.node, Expr::Missing(_)) {
+                self.sess
+                    .struct_token_error(&[TokenKind::Comma.into()], self.token);
+                self.bump();
+            } else {
+                items.push(item);
+            }
+
+            if let TokenKind::Comma = self.token.kind {
+                self.bump();
+            }
+            if has_newline {
+                self.skip_newlines();
+            }
+            self.drop(marker);
+        }
         items
     }
 
@@ -1109,15 +1220,21 @@ impl<'a> Parser<'a> {
                     self.sess.struct_token_loc(token, self.prev_token),
                 ));
             } else {
+                // If we don't find the indentation, skip and parse the next statement.
                 self.sess
-                    .struct_token_error(&[TokenKind::Indent.into()], self.token)
+                    .struct_token_error(&[TokenKind::Indent.into()], self.token);
+                return Box::new(Node::node(
+                    Expr::Config(ConfigExpr { items: vec![] }),
+                    self.sess.struct_token_loc(token, self.token),
+                ));
             }
             true
         } else {
             false
         };
 
-        let items = self.parse_config_entries();
+        let item_start_token = self.token;
+        let items = self.parse_config_entries(has_newline);
         let generators = self.parse_comp_clauses();
 
         // _DEDENT
@@ -1144,17 +1261,38 @@ impl<'a> Parser<'a> {
 
         if !generators.is_empty() {
             if items.len() > 1 {
-                self.sess
-                    .struct_span_error("Config multiple entries found", self.token.span)
+                self.sess.struct_span_error(
+                    &format!(
+                        "multiple config comp clause expression found: expected 1, got {}",
+                        items.len()
+                    ),
+                    item_start_token.span,
+                );
+                Box::new(Node::node(
+                    Expr::DictComp(DictComp {
+                        entry: items[0].node.clone(),
+                        generators,
+                    }),
+                    self.sess.struct_token_loc(token, self.prev_token),
+                ))
+            } else if items.len() == 1 {
+                Box::new(Node::node(
+                    Expr::DictComp(DictComp {
+                        entry: items[0].node.clone(),
+                        generators,
+                    }),
+                    self.sess.struct_token_loc(token, self.prev_token),
+                ))
+            } else {
+                self.sess.struct_span_error(
+                    "missing config comp clause expression",
+                    item_start_token.span,
+                );
+                Box::new(Node::node(
+                    Expr::Config(ConfigExpr { items }),
+                    self.sess.struct_token_loc(token, self.prev_token),
+                ))
             }
-
-            Box::new(Node::node(
-                Expr::DictComp(DictComp {
-                    entry: items[0].node.clone(),
-                    generators,
-                }),
-                self.sess.struct_token_loc(token, self.prev_token),
-            ))
         } else {
             Box::new(Node::node(
                 Expr::Config(ConfigExpr { items }),
@@ -1165,35 +1303,43 @@ impl<'a> Parser<'a> {
 
     /// Syntax:
     /// config_entries: config_entry ((COMMA [NEWLINE] | NEWLINE) config_entry)* [COMMA] [NEWLINE]
-    fn parse_config_entries(&mut self) -> Vec<NodeRef<ConfigEntry>> {
+    fn parse_config_entries(&mut self, has_newline: bool) -> Vec<NodeRef<ConfigEntry>> {
+        let is_terminator = |token: &kclvm_ast::token::Token| match &token.kind {
+            TokenKind::CloseDelim(DelimToken::Brace) | TokenKind::Dedent | TokenKind::Eof => true,
+            TokenKind::Newline if !has_newline => true,
+            _ => token.is_keyword(kw::For),
+        };
+
+        if is_terminator(&self.token) {
+            return Vec::new();
+        }
+
         let mut entries = vec![self.parse_config_entry()];
+
         if let TokenKind::Comma = self.token.kind {
             self.bump();
         }
-        self.skip_newlines();
+        if has_newline {
+            self.skip_newlines();
+        }
 
         loop {
-            if matches!(
-                self.token.kind,
-                TokenKind::CloseDelim(DelimToken::Brace) | TokenKind::Dedent
-            ) {
-                break;
-            }
-            if self.token.is_keyword(kw::For) {
-                break;
-            }
+            let marker = self.mark();
 
-            if let TokenKind::Comma = self.token.kind {
-                self.bump();
+            if is_terminator(&self.token) {
+                break;
             }
-            self.skip_newlines();
 
             entries.push(self.parse_config_entry());
 
             if let TokenKind::Comma = self.token.kind {
                 self.bump();
             }
-            self.skip_newlines();
+            if has_newline {
+                self.skip_newlines();
+            }
+
+            self.drop(marker);
         }
 
         entries
@@ -1233,14 +1379,17 @@ impl<'a> Parser<'a> {
                         TokenKind::BinOpEq(BinOpToken::Plus) => {
                             operation = ConfigEntryOperation::Insert;
                         }
-                        _ => self.sess.struct_token_error(
-                            &[
-                                TokenKind::Colon.into(),
-                                TokenKind::Assign.into(),
-                                TokenKind::BinOpEq(BinOpToken::Plus).into(),
-                            ],
-                            self.token,
-                        ),
+                        _ => {
+                            self.sess.struct_token_error(
+                                &[
+                                    TokenKind::Colon.into(),
+                                    TokenKind::Assign.into(),
+                                    TokenKind::BinOpEq(BinOpToken::Plus).into(),
+                                ],
+                                self.token,
+                            );
+                            operation = ConfigEntryOperation::Override;
+                        }
                     }
                     self.bump();
                     value = self.parse_expr();
@@ -1282,6 +1431,7 @@ impl<'a> Parser<'a> {
     /// loop_variables: identifier (COMMA identifier)*
     fn parse_comp_clause(&mut self) -> NodeRef<CompClause> {
         let token = self.token;
+        // bump the `for` keyword.
         self.bump();
 
         let mut targets = vec![self.parse_identifier()];
@@ -1491,6 +1641,7 @@ impl<'a> Parser<'a> {
             body: &mut ConfigIfEntryExpr,
             need_skip_newlines: bool,
         ) -> bool {
+            let marker = this.mark();
             if need_skip_newlines {
                 if let TokenKind::Dedent = this.token.kind {
                     return false;
@@ -1575,14 +1726,17 @@ impl<'a> Parser<'a> {
                         this.bump();
                         ConfigEntryOperation::Insert
                     }
-                    _ => this.sess.struct_token_error(
-                        &[
-                            TokenKind::Colon.into(),
-                            TokenKind::Assign.into(),
-                            TokenKind::BinOpEq(BinOpToken::Plus).into(),
-                        ],
-                        this.token,
-                    ),
+                    _ => {
+                        this.sess.struct_token_error(
+                            &[
+                                TokenKind::Colon.into(),
+                                TokenKind::Assign.into(),
+                                TokenKind::BinOpEq(BinOpToken::Plus).into(),
+                            ],
+                            this.token,
+                        );
+                        ConfigEntryOperation::Override
+                    }
                 };
 
                 let expr1 = this.parse_expr();
@@ -1599,20 +1753,21 @@ impl<'a> Parser<'a> {
                     pos
                 ));
             }
-
+            this.drop(marker);
             true
         }
 
-        while parse_body_item(self, &mut body, need_skip_newlines) {
-            if let TokenKind::Comma = self.token.kind {
-                self.bump();
-            }
-            if need_skip_newlines {
+        if !need_skip_newlines {
+            // Only parse one inline key-value pair.
+            parse_body_item(self, &mut body, need_skip_newlines);
+        } else {
+            while parse_body_item(self, &mut body, need_skip_newlines) {
+                // bump optional comma at the endline.
+                if let TokenKind::Comma = self.token.kind {
+                    self.bump();
+                }
                 self.skip_newlines();
             }
-        }
-        if let TokenKind::Newline = self.token.kind {
-            self.bump();
         }
 
         if need_skip_newlines {
@@ -1635,16 +1790,19 @@ impl<'a> Parser<'a> {
     /// schema_expr: identifier config_expr
     pub(crate) fn parse_schema_expr(
         &mut self,
-        identifier: Node<Expr>,
+        expr: Node<Expr>,
         lo: token::Token,
     ) -> NodeRef<Expr> {
-        let result = identifier.try_into();
+        let missing_ident = expr.into_missing_identifier();
+        let result = expr.try_into();
 
         let name = match result {
             Ok(v) => v,
-            Err(_) => self
-                .sess
-                .struct_token_error(&[TokenKind::ident_value()], self.token),
+            Err(_) => {
+                self.sess
+                    .struct_token_error(&[TokenKind::ident_value()], self.token);
+                missing_ident
+            }
         };
 
         // config_expr
@@ -1667,9 +1825,11 @@ impl<'a> Parser<'a> {
 
         let name = match result {
             Ok(v) => v,
-            Err(_) => self
-                .sess
-                .struct_token_error(&[TokenKind::ident_value()], self.token),
+            Err(_) => {
+                self.sess
+                    .struct_token_error(&[TokenKind::ident_value()], self.token);
+                call.func.as_ref().into_missing_identifier()
+            }
         };
 
         // config_expr
@@ -1737,13 +1897,15 @@ impl<'a> Parser<'a> {
         loop {
             if matches!(
                 self.token.kind,
-                TokenKind::CloseDelim(DelimToken::Brace) | TokenKind::Dedent
+                TokenKind::CloseDelim(DelimToken::Brace) | TokenKind::Dedent | TokenKind::Eof
             ) {
                 break;
             }
             if let Some(stmt) = self.parse_stmt() {
                 stmt_list.push(stmt);
                 self.skip_newlines();
+            } else {
+                self.bump();
             }
         }
 
@@ -1770,32 +1932,6 @@ impl<'a> Parser<'a> {
         ))
     }
 
-    /// Return type of the lambda
-    fn parse_lambda_type(&mut self) -> String {
-        self.bump();
-
-        if self.token.is_keyword(kw::Type) {
-            self.bump();
-
-            // rules: append strings util a left brace. panic on a '\n'.
-            let mut s = String::new();
-
-            while let TokenKind::Literal(lt) = self.token.kind {
-                let token_str = lt.symbol.as_str();
-                if token_str == "\n" {
-                    self.sess
-                        .struct_span_error("Cross line type is not supported.", self.token.span)
-                }
-
-                s.push_str(&lt.symbol.as_str())
-            }
-
-            s.to_string()
-        } else {
-            self.sess.struct_token_error(&[kw::Type.into()], self.token)
-        }
-    }
-
     /// Syntax:
     /// paren_expr: LEFT_PARENTHESES expr RIGHT_PARENTHESES
     fn parse_paren_expr(&mut self) -> NodeRef<Expr> {
@@ -1808,7 +1944,7 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
 
-            _ => self.sess.struct_token_error_recovery(
+            _ => self.sess.struct_token_error(
                 &[token::TokenKind::CloseDelim(token::DelimToken::Paren).into()],
                 self.token,
             ),
@@ -1828,13 +1964,15 @@ impl<'a> Parser<'a> {
         let mut has_keyword = false;
 
         loop {
+            // Record the argument expression start token.
+            let token = self.token;
             match self.parse_argument_expr() {
                 Either::Left(expr) => {
                     args.push(Box::new(expr));
                     if has_keyword {
                         self.sess.struct_span_error(
-                            "Positional argument follows keyword argument.",
-                            self.token.span,
+                            "positional argument follows keyword argument",
+                            token.span,
                         )
                     }
                 }
@@ -1870,9 +2008,11 @@ impl<'a> Parser<'a> {
 
                 let arg = match &expr.node {
                     Expr::Identifier(x) => x.clone(),
-                    _ => self
-                        .sess
-                        .struct_token_error(&[TokenKind::ident_value()], self.token),
+                    _ => {
+                        self.sess
+                            .struct_token_error(&[TokenKind::ident_value()], self.token);
+                        expr.into_missing_identifier().node
+                    }
                 };
 
                 // expr
@@ -1948,18 +2088,22 @@ impl<'a> Parser<'a> {
 
     /// ~~~ Id
 
-    fn parse_identifier(&mut self) -> NodeRef<Identifier> {
+    pub(crate) fn parse_identifier(&mut self) -> NodeRef<Identifier> {
         let token = self.token;
         let mut names = Vec::new();
         let ident = self.token.ident();
         match ident {
             Some(id) => {
-                names.push(id.as_str().to_string());
+                names.push(id.as_str());
                 self.bump();
             }
-            None => self
-                .sess
-                .struct_token_error(&[TokenKind::ident_value()], self.token),
+            None => {
+                {
+                    self.sess
+                        .struct_token_error(&[TokenKind::ident_value()], self.token);
+                    names.push("".to_string())
+                };
+            }
         }
 
         loop {
@@ -1973,9 +2117,11 @@ impl<'a> Parser<'a> {
                             names.push(id.as_str().to_string());
                             self.bump();
                         }
-                        None => self
-                            .sess
-                            .struct_token_error(&[TokenKind::ident_value()], self.token),
+                        None => {
+                            self.sess
+                                .struct_token_error(&[TokenKind::ident_value()], self.token);
+                            names.push("".to_string())
+                        }
                     }
                 }
                 _ => break,
@@ -2007,6 +2153,7 @@ impl<'a> Parser<'a> {
                     None => {
                         self.sess
                             .struct_token_error(&[token::LitKind::Integer.into()], token);
+                        0
                     }
                 };
                 match lk.suffix {
@@ -2024,14 +2171,18 @@ impl<'a> Parser<'a> {
                     _ => {
                         self.sess
                             .struct_token_error(&[token::LitKind::Float.into()], token);
+                        0.0
                     }
                 };
                 (None, NumberLitValue::Float(value))
             }
-            _ => self.sess.struct_token_error(
-                &[token::LitKind::Integer.into(), token::LitKind::Float.into()],
-                self.token,
-            ),
+            _ => {
+                self.sess.struct_token_error(
+                    &[token::LitKind::Integer.into(), token::LitKind::Float.into()],
+                    self.token,
+                );
+                (None, NumberLitValue::Int(0))
+            }
         };
 
         self.bump();
@@ -2052,20 +2203,21 @@ impl<'a> Parser<'a> {
 
         let (is_long_string, raw_value, value) = match lk.kind {
             token::LitKind::Str { is_long_string, .. } => {
-                let value = lk.symbol.as_str().to_string();
-                let raw_value = lk
-                    .raw
-                    .map_or("".to_string(), |raw| raw.as_str().to_string());
+                let value = lk.symbol.as_str();
+                let raw_value = lk.raw.map_or("".to_string(), |raw| raw.as_str());
                 (is_long_string, raw_value, value)
             }
-            _ => self.sess.struct_token_error(
-                &[token::LitKind::Str {
-                    is_long_string: false,
-                    is_raw: false,
-                }
-                .into()],
-                self.token,
-            ),
+            _ => {
+                self.sess.struct_token_error(
+                    &[token::LitKind::Str {
+                        is_long_string: false,
+                        is_raw: false,
+                    }
+                    .into()],
+                    self.token,
+                );
+                (false, "\"\"".to_string(), "".to_string())
+            }
         };
 
         self.bump();
@@ -2100,19 +2252,23 @@ impl<'a> Parser<'a> {
                     NameConstant::False
                 } else {
                     self.sess
-                        .struct_token_error(&[token::LitKind::Bool.into()], self.token)
+                        .struct_token_error(&[token::LitKind::Bool.into()], self.token);
+                    NameConstant::False
                 }
             }
             token::LitKind::None => NameConstant::None,
             token::LitKind::Undefined => NameConstant::Undefined,
-            _ => self.sess.struct_token_error(
-                &[
-                    token::LitKind::Bool.into(),
-                    token::LitKind::None.into(),
-                    token::LitKind::Undefined.into(),
-                ],
-                self.token,
-            ),
+            _ => {
+                self.sess.struct_token_error(
+                    &[
+                        token::LitKind::Bool.into(),
+                        token::LitKind::None.into(),
+                        token::LitKind::Undefined.into(),
+                    ],
+                    self.token,
+                );
+                NameConstant::Undefined
+            }
         };
 
         self.bump();
@@ -2121,5 +2277,31 @@ impl<'a> Parser<'a> {
             Expr::NameConstantLit(NameConstantLit { value }),
             self.sess.struct_token_loc(token, self.prev_token),
         ))
+    }
+
+    #[inline]
+    pub(crate) fn missing_expr(&self) -> NodeRef<Expr> {
+        Box::new(Node::node(
+            Expr::Missing(MissingExpr),
+            // The text range of missing expression is zero.
+            self.sess.struct_token_loc(self.token, self.token),
+        ))
+    }
+
+    /// Cast an expression into an identifier, else
+    /// store an error `expected identifier.
+    #[inline]
+    pub(crate) fn expr_as_identifier(
+        &mut self,
+        expr: NodeRef<Expr>,
+        token: kclvm_ast::token::Token,
+    ) -> Identifier {
+        if let Expr::Identifier(x) = expr.node {
+            x
+        } else {
+            self.sess
+                .struct_span_error("expected identifier", token.span);
+            expr.into_missing_identifier().node
+        }
     }
 }

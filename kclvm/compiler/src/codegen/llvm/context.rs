@@ -29,7 +29,7 @@ use kclvm_sema::builtin;
 use kclvm_sema::plugin;
 
 use crate::codegen::abi::Align;
-use crate::codegen::{error as kcl_error, EmitOptions};
+use crate::codegen::{error as kcl_error, EmitOptions, INNER_LEVEL};
 use crate::codegen::{
     traits::*, ENTRY_NAME, GLOBAL_VAL_ALIGNMENT, KCL_CONTEXT_VAR_NAME, MODULE_NAME,
     PKG_INIT_FUNCTION_SUFFIX,
@@ -418,6 +418,8 @@ impl<'ctx> ValueMethods for LLVMCodeGenContext<'ctx> {
     }
     /// Construct a function value using a native function.
     fn function_value(&self, function: FunctionValue<'ctx>) -> Self::Value {
+        let func_name = function.get_name().to_str().unwrap();
+        let func_name_ptr = self.native_global_string(func_name, func_name).into();
         let lambda_fn_ptr = self.builder.build_bitcast(
             function.as_global_value().as_pointer_value(),
             self.context.i64_type().ptr_type(AddressSpace::default()),
@@ -425,21 +427,22 @@ impl<'ctx> ValueMethods for LLVMCodeGenContext<'ctx> {
         );
         self.build_call(
             &ApiFunc::kclvm_value_Function_using_ptr.name(),
-            &[lambda_fn_ptr],
+            &[lambda_fn_ptr, func_name_ptr],
         )
     }
     /// Construct a closure function value with the closure variable.
     fn closure_value(&self, function: FunctionValue<'ctx>, closure: Self::Value) -> Self::Value {
+        let func_name = function.get_name().to_str().unwrap();
+        let func_name_ptr = self.native_global_string(func_name, func_name).into();
         // Convert the function to a i64 pointer to store it into the function value.
         let fn_ptr = self.builder.build_bitcast(
             function.as_global_value().as_pointer_value(),
             self.context.i64_type().ptr_type(AddressSpace::default()),
             "",
         );
-        let name = self.native_global_string("", "").into();
         self.build_call(
             &ApiFunc::kclvm_value_Function.name(),
-            &[fn_ptr, closure, name],
+            &[fn_ptr, closure, func_name_ptr, self.native_i8_zero().into()],
         )
     }
     /// Construct a schema function value using native functions.
@@ -1674,11 +1677,17 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                     self.context.i64_type().ptr_type(AddressSpace::default()),
                     "",
                 );
-                let name = self.native_global_string("", "").into();
+                let func_name = function.get_name().to_str().unwrap();
+                let func_name_ptr = self.native_global_string(func_name, func_name).into();
                 let none_value = self.none_value();
                 self.build_call(
                     &ApiFunc::kclvm_value_Function.name(),
-                    &[lambda_fn_ptr, none_value, name],
+                    &[
+                        lambda_fn_ptr,
+                        none_value,
+                        func_name_ptr,
+                        self.native_i8_zero().into(),
+                    ],
                 )
             };
             Ok(value)
@@ -1696,7 +1705,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             let none_value = self.none_value();
             return Ok(self.build_call(
                 &ApiFunc::kclvm_value_Function.name(),
-                &[null_fn_ptr, none_value, name],
+                &[null_fn_ptr, none_value, name, self.native_i8(1).into()],
             ));
         // User pkgpath
         } else {
@@ -1726,7 +1735,6 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                                     &[closure_map, string_ptr_value],
                                 )
                             }
-                            // Nest comp for
                             None => self.builder.build_load(*var, name),
                         }
                     } else {
@@ -1806,11 +1814,10 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         Ok(value)
     }
 
-    /// Get closure dict in the current scope.
-    pub(crate) fn get_closure_dict_in_current_scope(&self) -> BasicValueEnum<'ctx> {
-        let is_in_schema = self.schema_stack.borrow().len() > 0;
-        // Get closures in the current scope
-        let dict_value = self.dict_value();
+    /// Get closure map in the current scope.
+    pub(crate) fn get_closure_map(&self) -> BasicValueEnum<'ctx> {
+        // Get closures in the current scope.
+        let closure_map = self.dict_value();
         {
             let pkgpath = self.current_pkgpath();
             let pkgpath = if !pkgpath.starts_with(PKG_PATH_PREFIX) && pkgpath != MAIN_PKG_PATH {
@@ -1818,36 +1825,43 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             } else {
                 pkgpath
             };
-            let pkg_scopes = self.pkg_scopes.borrow_mut();
+            let pkg_scopes = self.pkg_scopes.borrow();
             let scopes = pkg_scopes
                 .get(&pkgpath)
                 .unwrap_or_else(|| panic!("package {} is not found", pkgpath));
-            let closures_mut = scopes
-                .last()
-                .expect(kcl_error::INTERNAL_ERROR_MSG)
-                .closures
-                .borrow_mut();
-            let variables_mut = scopes
-                .last()
-                .expect(kcl_error::INTERNAL_ERROR_MSG)
-                .variables
-                .borrow_mut();
-            for (key, ptr) in &*closures_mut {
-                if variables_mut.contains_key(key) {
-                    let value = self.builder.build_load(*ptr, "");
-                    self.dict_insert_override_item(dict_value, key.as_str(), value);
-                }
+            // Clouure variable must be inner of the global scope.
+            if scopes.len() > INNER_LEVEL {
+                let closures = scopes
+                    .last()
+                    .expect(kcl_error::INTERNAL_ERROR_MSG)
+                    .closures
+                    .borrow();
+                // Curret scope vaiable.
+                let variables = scopes
+                    .get(scopes.len() - INNER_LEVEL)
+                    .expect(kcl_error::INTERNAL_ERROR_MSG)
+                    .variables
+                    .borrow();
+                // Transverse all scope and capture closures except the builtin amd global scope.
+                for (key, ptr) in &*closures {
+                    if variables.contains_key(key) {
+                        let value = self.builder.build_load(*ptr, "");
+                        self.dict_insert_override_item(closure_map, key.as_str(), value);
+                    }
+                } // Curret scope vaiable.
             }
         }
+        // Capture schema `self` closure.
+        let is_in_schema = self.schema_stack.borrow().len() > 0;
         if is_in_schema {
             for shcmea_closure_name in value::SCHEMA_VARIABLE_LIST {
                 let value = self
                     .get_variable(shcmea_closure_name)
                     .expect(kcl_error::INTERNAL_ERROR_MSG);
-                self.dict_insert_override_item(dict_value, shcmea_closure_name, value);
+                self.dict_insert_override_item(closure_map, shcmea_closure_name, value);
             }
         }
-        dict_value
+        closure_map
     }
 
     /// Push a function call frame into the function stack

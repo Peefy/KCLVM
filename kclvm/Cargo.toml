@@ -1,6 +1,6 @@
 [package]
 name = "kclvm"
-version = "0.4.5"
+version = "0.4.6"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -12,9 +12,6 @@ crate-type = [
 path = "src/lib.rs"
 name = "kclvm_cli_cdylib"
 
-[[bin]]
-path = "src/main.rs"
-name = "kclvm_cli"
 
 [build-dependencies]
 cc = "1.0"
@@ -29,22 +26,23 @@ indexmap = "1.0"
 fslock = "0.2.1"
 libloading = "0.7.3"
 chrono = "0.4.19"
-anyhow = "1.0"
-compiler_base_session = {path = "../compiler_base/session", version = "0.0.12"}
+anyhow = { version = "1.0.70", features = ["backtrace"] }
+compiler_base_session = {path = "../compiler_base/session"}
 
-kclvm-capi = {path = "./capi",version = "0.4.5"}
-kclvm-cmd = {path = "./cmd",version = "0.4.5"}
-kclvm-ast = {path = "./ast", version = "0.4.5"}
-kclvm-runner = {path = "./runner", version = "0.4.5"}
-kclvm-parser = {path = "./parser", version = "0.4.5"}
-kclvm-compiler = {path = "./compiler", version = "0.4.5"}
-kclvm-config = {path = "./config", version = "0.4.5"}
-kclvm-runtime = {path = "./runtime", version = "0.4.5"}
-kclvm-sema = {path = "./sema", version = "0.4.5"}
-kclvm-tools = {path = "./tools", version = "0.4.5"}
-kclvm-version = {path = "./version", version = "0.4.5"}
-kclvm-error = {path = "./error", version = "0.4.5"}
-kclvm-query = {path = "./query", version = "0.4.5"}
+kclvm-api = {path = "./api"}
+kclvm-cmd = {path = "./cmd"}
+kclvm-ast = {path = "./ast"}
+kclvm-runner = {path = "./runner"}
+kclvm-parser = {path = "./parser"}
+kclvm-compiler = {path = "./compiler"}
+kclvm-config = {path = "./config"}
+kclvm-runtime = {path = "./runtime"}
+kclvm-sema = {path = "./sema"}
+kclvm-tools = {path = "./tools"}
+kclvm-version = {path = "./version"}
+kclvm-error = {path = "./error"}
+kclvm-query = {path = "./query"}
+kclvm-driver = {path = "./driver"}
 
 [profile.release]
 rpath = true
@@ -54,7 +52,10 @@ lto = true
 
 [workspace]
 members = [
-    "capi",
+    "third-party/prost-wkt",
+    "third-party/prost-wkt/wkt-build", 
+    "third-party/prost-wkt/wkt-types",
+    "api",
     "cmd",
     "ast",
     "ast_pretty",

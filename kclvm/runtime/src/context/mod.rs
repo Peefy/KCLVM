@@ -4,7 +4,7 @@ pub mod api;
 pub use api::*;
 use std::fmt;
 
-use crate::PanicInfo;
+use crate::{BacktraceFrame, PanicInfo};
 
 #[allow(non_camel_case_types)]
 type kclvm_value_ref_t = crate::ValueRef;
@@ -42,13 +42,12 @@ impl PanicInfo {
         let result = serde_json::from_str(s);
         match result {
             Ok(res) => res,
-            Err(_) => {
-                let mut panic_info = PanicInfo::default();
-                panic_info.__kcl_PanicInfo__ = true;
-                panic_info.message = s.to_string();
-                panic_info.err_type_code = crate::ErrType::CompileError_TYPE as i32;
-                panic_info
-            }
+            Err(_) => PanicInfo {
+                __kcl_PanicInfo__: true,
+                message: s.to_string(),
+                err_type_code: crate::ErrType::CompileError_TYPE as i32,
+                ..Default::default()
+            },
         }
     }
 }
@@ -56,6 +55,17 @@ impl PanicInfo {
 impl From<String> for PanicInfo {
     fn from(value: String) -> Self {
         Self::from_string(&value)
+    }
+}
+
+impl PanicInfo {
+    /// New a [`PanicInfo`] from error message [`value`] and the position that error occur.
+    pub fn from_ast_pos(value: String, pos: (String, u64, u64, u64, u64)) -> Self {
+        let mut panic_info = Self::from_string(&value);
+        panic_info.kcl_file = pos.0;
+        panic_info.kcl_line = pos.1 as i32;
+        panic_info.kcl_col = pos.2 as i32;
+        panic_info
     }
 }
 
@@ -179,16 +189,24 @@ impl crate::Context {
     pub fn set_panic_info(&mut self, info: &std::panic::PanicInfo) {
         self.panic_info.__kcl_PanicInfo__ = true;
 
-        if let Some(s) = info.payload().downcast_ref::<&str>() {
-            self.panic_info.message = s.to_string();
+        self.panic_info.message = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            s.to_string()
         } else if let Some(s) = info.payload().downcast_ref::<&String>() {
-            self.panic_info.message = (*s).clone();
+            (*s).clone()
         } else if let Some(s) = info.payload().downcast_ref::<String>() {
-            self.panic_info.message = (*s).clone();
+            (*s).clone()
         } else {
-            self.panic_info.message = "".to_string();
+            "".to_string()
+        };
+        if self.cfg.debug_mode {
+            self.panic_info.backtrace = self.backtrace.clone();
+            self.panic_info.backtrace.push(BacktraceFrame {
+                file: self.panic_info.kcl_file.clone(),
+                func: self.panic_info.kcl_func.clone(),
+                col: self.panic_info.kcl_col,
+                line: self.panic_info.kcl_line,
+            });
         }
-
         if let Some(location) = info.location() {
             self.panic_info.rust_file = location.file().to_string();
             self.panic_info.rust_line = location.line() as i32;

@@ -5,17 +5,19 @@ use compiler_base_error::diagnostic_handler::DiagnosticHandler;
 use compiler_base_session::Session;
 use compiler_base_span::{span::new_byte_pos, FilePathMapping, SourceMap};
 use expect_test::{expect, Expect};
+use kclvm_error::Handler;
 use kclvm_span::create_session_globals_then;
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 impl ParseSession {
     #[inline]
     pub(crate) fn with_source_map(sm: Arc<SourceMap>) -> Self {
-        Self(Arc::new(Session::new(
-            sm,
-            Arc::new(DiagnosticHandler::default()),
-        )))
+        Self(
+            Arc::new(Session::new(sm, Arc::new(DiagnosticHandler::default()))),
+            RefCell::new(Handler::default()),
+        )
     }
 }
 
@@ -29,7 +31,7 @@ fn check_lexing(src: &str, expect: Expect) {
             create_session_globals_then(|| {
                 let actual: String = parse_token_streams(sess, src_from_sf, new_byte_pos(0))
                     .iter()
-                    .map(|token| format!("{:?}\n", token))
+                    .map(|token| format!("{token:?}\n"))
                     .collect();
                 expect.assert_eq(&actual)
             });
@@ -76,8 +78,7 @@ fn test_str_content_eval() {
         assert_eq!(
             str_content_eval(input, quote_char, triple_quoted, is_bytes, is_raw),
             expected,
-            "test failed, input: {}",
-            input
+            "test failed, input: {input}"
         )
     }
 }
@@ -485,21 +486,21 @@ fn test_peek() {
     let src = "\na=1";
     let sm = SourceMap::new(FilePathMapping::empty());
     sm.new_source_file(PathBuf::from("").into(), src.to_string());
-    let mut sess = ParseSession::with_source_map(Arc::new(sm));
+    let sess = ParseSession::with_source_map(Arc::new(sm));
 
     create_session_globals_then(|| {
-        let stream = parse_token_streams(&mut sess, src, new_byte_pos(0));
+        let stream = parse_token_streams(&sess, src, new_byte_pos(0));
         let mut cursor = stream.cursor();
 
         let tok0 = cursor.next();
         assert_eq!(
-            format!("{:?}", tok0),
+            format!("{tok0:?}"),
             "Some(Token { kind: Newline, span: Span { base_or_index: 0, len_or_tag: 1 } })"
         );
 
         let peek = cursor.peek();
         assert_eq!(
-            format!("{:?}", peek),
+            format!("{peek:?}"),
            "Some(Token { kind: Ident(Symbol(SymbolIndex { idx: 42 })), span: Span { base_or_index: 1, len_or_tag: 1 } })"
         );
     });

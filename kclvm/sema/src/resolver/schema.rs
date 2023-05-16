@@ -2,10 +2,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::builtin::BUILTIN_DECORATORS;
-use crate::resolver::pos::GetPos;
 use crate::resolver::Resolver;
 use crate::ty::{Decorator, DecoratorTarget, TypeKind};
 use kclvm_ast::ast;
+use kclvm_ast::pos::GetPos;
 use kclvm_ast::walker::MutSelfTypedResultWalker;
 use kclvm_error::{ErrorKind, Message, Position, Style};
 
@@ -17,6 +17,7 @@ impl<'ctx> Resolver<'ctx> {
         &mut self,
         schema_stmt: &'ctx ast::SchemaStmt,
     ) -> ResolvedResult {
+        self.resolve_unique_key(&schema_stmt.name.node, &schema_stmt.name.get_pos());
         let ty = self.lookup_type_from_scope(&schema_stmt.name.node, schema_stmt.name.get_pos());
         let scope_ty = if ty.is_schema() {
             ty.into_schema_type()
@@ -26,7 +27,7 @@ impl<'ctx> Resolver<'ctx> {
                 &[Message {
                     pos: schema_stmt.get_pos(),
                     style: Style::LineAndColumn,
-                    message: format!("expect schema type, got {}", ty.ty_str()),
+                    message: format!("expected schema type, got {}", ty.ty_str()),
                     note: None,
                 }],
             );
@@ -50,6 +51,7 @@ impl<'ctx> Resolver<'ctx> {
                     ty: param.ty.clone(),
                     kind: ScopeObjectKind::Parameter,
                     used: false,
+                    doc: None,
                 },
             )
         }
@@ -68,6 +70,7 @@ impl<'ctx> Resolver<'ctx> {
                         ty: index_signature.key_ty.clone(),
                         kind: ScopeObjectKind::Variable,
                         used: false,
+                        doc: None,
                     },
                 )
             }
@@ -88,6 +91,7 @@ impl<'ctx> Resolver<'ctx> {
                         ty: self.any_ty(),
                         kind: ScopeObjectKind::Variable,
                         used: false,
+                        doc: None,
                     },
                 );
             }
@@ -104,6 +108,7 @@ impl<'ctx> Resolver<'ctx> {
     }
 
     pub(crate) fn resolve_rule_stmt(&mut self, rule_stmt: &'ctx ast::RuleStmt) -> ResolvedResult {
+        self.resolve_unique_key(&rule_stmt.name.node, &rule_stmt.name.get_pos());
         let ty = self.lookup_type_from_scope(&rule_stmt.name.node, rule_stmt.name.get_pos());
         let scope_ty = if ty.is_schema() {
             ty.into_schema_type()
@@ -113,7 +118,7 @@ impl<'ctx> Resolver<'ctx> {
                 &[Message {
                     pos: rule_stmt.get_pos(),
                     style: Style::LineAndColumn,
-                    message: format!("expect rule type, got {}", ty.ty_str()),
+                    message: format!("expected rule type, got {}", ty.ty_str()),
                     note: None,
                 }],
             );
@@ -137,6 +142,7 @@ impl<'ctx> Resolver<'ctx> {
                     ty: param.ty.clone(),
                     kind: ScopeObjectKind::Parameter,
                     used: false,
+                    doc: None,
                 },
             )
         }

@@ -3,7 +3,7 @@ use kclvm_ast::{token::LitKind, token::TokenKind};
 
 use super::Parser;
 
-impl<'a> Parser<'_> {
+impl<'a> Parser<'a> {
     /// Syntax:
     /// start: (NEWLINE | statement)*
     pub fn parse_module(&mut self) -> Module {
@@ -34,11 +34,21 @@ impl<'a> Parser<'_> {
 
     fn parse_body(&mut self) -> Vec<NodeRef<Stmt>> {
         let mut stmts = Vec::new();
+        loop {
+            if matches!(self.token.kind, TokenKind::Eof) {
+                self.bump();
+                break;
+            }
 
-        while let Some(stmt) = self.parse_stmt() {
-            stmts.push(stmt)
+            if let Some(stmt) = self.parse_stmt() {
+                stmts.push(stmt);
+            } else {
+                // Error recovery from panic mode: Once an error is detected (the statement is None),
+                // the symbols in the input are continuously discarded (one symbol at a time), until the
+                // "synchronous lexical unit" is found (the statement start token e.g., import, schema, etc).
+                self.bump();
+            }
         }
-
         stmts
     }
 }

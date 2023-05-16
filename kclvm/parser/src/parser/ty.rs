@@ -8,7 +8,7 @@ use kclvm_ast::token::{BinOpToken, DelimToken, TokenKind};
 use kclvm_ast::{ast, expr_as};
 use kclvm_span::symbol::{kw, sym};
 
-impl<'a> Parser<'_> {
+impl<'a> Parser<'a> {
     /// Syntax:
     ///
     /// type: type_element (OR type_element)*
@@ -124,6 +124,7 @@ impl<'a> Parser<'_> {
                     } else {
                         self.sess
                             .struct_token_error(&[kw::True.into(), kw::False.into()], self.token);
+                        ast::LiteralType::Bool(false)
                     }
                 }
                 token::LitKind::Integer => {
@@ -148,6 +149,7 @@ impl<'a> Parser<'_> {
                     } else {
                         self.sess
                             .struct_token_error(&[kw::True.into(), kw::False.into()], self.token);
+                        ast::LiteralType::Bool(false)
                     }
                 }
             };
@@ -235,5 +237,9 @@ impl<'a> Parser<'_> {
             ],
             self.token,
         );
+        Box::new(Node::node(
+            Type::Any,
+            self.sess.struct_token_loc(token, self.prev_token),
+        ))
     }
 }

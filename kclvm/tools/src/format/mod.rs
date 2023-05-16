@@ -7,9 +7,9 @@
 //! to print it as source code string.
 use anyhow::{anyhow, Result};
 use kclvm_ast_pretty::print_ast_module;
+use kclvm_driver::get_kcl_files;
 use std::path::Path;
 
-use crate::util::get_kcl_files;
 use kclvm_parser::parse_file;
 
 #[cfg(test)]
@@ -52,7 +52,7 @@ pub fn format<P: AsRef<Path>>(path: P, opts: &FormatOptions) -> Result<Vec<Strin
             changed_paths.push(file)
         }
     }
-    if !opts.is_stdout {
+    if opts.is_stdout {
         let n = changed_paths.len();
         println!(
             "KCL format done and {} {} formatted:",
@@ -67,7 +67,7 @@ pub fn format<P: AsRef<Path>>(path: P, opts: &FormatOptions) -> Result<Vec<Strin
 }
 
 /// Formats a file and returns whether the file has been formatted and modified.
-fn format_file(file: &str, opts: &FormatOptions) -> Result<bool> {
+pub fn format_file(file: &str, opts: &FormatOptions) -> Result<bool> {
     let src = std::fs::read_to_string(file)?;
     let (source, is_formatted) = format_source(&src)?;
     if opts.is_stdout {
@@ -80,7 +80,7 @@ fn format_file(file: &str, opts: &FormatOptions) -> Result<bool> {
 
 /// Formats a code source and returns the formatted source and
 /// whether the source is changed.
-fn format_source(src: &str) -> Result<(String, bool)> {
+pub fn format_source(src: &str) -> Result<(String, bool)> {
     let module = match parse_file("", Some(src.to_string())) {
         Ok(module) => module,
         Err(err) => return Err(anyhow!("{}", err)),

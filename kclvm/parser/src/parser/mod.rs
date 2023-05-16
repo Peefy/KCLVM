@@ -10,6 +10,8 @@
 //! KCL syntax elements can be simply divided into statements, expressions and tokens,
 //! in which statement consists of expressions and tokens. In expression, operand is the most
 //! complex part to enable all kinds of ident, constant, list, dict, config exprs.
+//!
+//! The parser error recovery strategy design is [here](https://github.com/KusionStack/KCLVM/issues/420).
 
 #![macro_use]
 
@@ -24,12 +26,14 @@ mod ty;
 
 use crate::session::ParseSession;
 
-use compiler_base_span::span::new_byte_pos;
-use kclvm_ast::ast::{Comment, NodeRef};
+use compiler_base_span::span::{new_byte_pos, BytePos};
+use kclvm_ast::ast::{Comment, NodeRef, PosTuple};
 use kclvm_ast::token::{CommentKind, Token, TokenKind};
 use kclvm_ast::token_stream::{Cursor, TokenStream};
 use kclvm_span::symbol::Symbol;
 
+/// The parser is built on top of the [`kclvm_parser::lexer`], and ordering KCL tokens
+/// [`kclvm_ast::token`] to KCL ast nodes [`kclvm_ast::ast`].
 pub struct Parser<'a> {
     /// The current token.
     pub token: Token,
@@ -42,6 +46,12 @@ pub struct Parser<'a> {
     /// parse-time session
     pub sess: &'a ParseSession,
 }
+
+/// The DropMarker is used to mark whether to discard the token Mark whether to discard the token.
+/// The principle is to store the index of the token in the token stream. When there is no index
+/// change during the parse process, it is discarded and an error is output
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct DropMarker(usize);
 
 impl<'a> Parser<'a> {
     pub fn new(sess: &'a ParseSession, stream: TokenStream) -> Self {
@@ -61,13 +71,16 @@ impl<'a> Parser<'a> {
         parser
     }
 
-    pub(crate) fn token_span_pos(
-        &mut self,
-        lo_tok: Token,
-        hi_tok: Token,
-    ) -> (String, u64, u64, u64, u64) {
-        let lo = self.sess.lookup_char_pos(lo_tok.span.lo());
-        let hi = self.sess.lookup_char_pos(hi_tok.span.hi());
+    /// Get an AST position from the token pair (lo_tok, hi_tok).
+    #[inline]
+    pub(crate) fn token_span_pos(&mut self, lo_tok: Token, hi_tok: Token) -> PosTuple {
+        self.byte_pos_to_pos(lo_tok.span.lo(), hi_tok.span.hi())
+    }
+
+    /// Get an AST position from the byte pos pair (lo, hi).
+    pub(crate) fn byte_pos_to_pos(&mut self, lo: BytePos, hi: BytePos) -> PosTuple {
+        let lo = self.sess.lookup_char_pos(lo);
+        let hi = self.sess.lookup_char_pos(hi);
 
         let filename: String = format!("{}", lo.file.name.prefer_remapped());
         (
@@ -88,6 +101,12 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Whether the parser has the next token in the token stream.
+    #[inline]
+    pub(crate) fn has_next(&mut self) -> bool {
+        self.cursor.next().is_some()
+    }
+
     pub(crate) fn bump_keyword(&mut self, kw: Symbol) {
         if !self.token.is_keyword(kw) {
             self.sess.struct_token_error(&[kw.into()], self.token);
@@ -105,6 +124,26 @@ impl<'a> Parser<'a> {
     pub(crate) fn skip_newlines(&mut self) {
         while let TokenKind::Newline = self.token.kind {
             self.bump();
+        }
+    }
+
+    /// Mark the token index.
+    pub(crate) fn mark(&mut self) -> DropMarker {
+        DropMarker(self.cursor.index())
+    }
+
+    /// Decide to discard token according to the current index.
+    pub(crate) fn drop(&mut self, marker: DropMarker) -> bool {
+        if marker.0 == self.cursor.index() {
+            let token_str: String = self.token.into();
+            self.sess.struct_span_error(
+                &format!("expected expression got {}", token_str),
+                self.token.span,
+            );
+            self.bump();
+            true
+        } else {
+            false
         }
     }
 }
@@ -142,8 +181,8 @@ impl<'a> Parser<'a> {
 
             // split comments
             if matches!(tok.kind, TokenKind::DocComment(_)) {
-                match tok.kind {
-                    TokenKind::DocComment(comment_kind) => match comment_kind {
+                if let TokenKind::DocComment(comment_kind) = tok.kind {
+                    match comment_kind {
                         CommentKind::Line(x) => {
                             let lo = sess.lookup_char_pos(tok.span.lo());
                             let hi = sess.lookup_char_pos(tok.span.hi());
@@ -162,8 +201,7 @@ impl<'a> Parser<'a> {
 
                             comments.push(NodeRef::new(node));
                         }
-                    },
-                    _ => (),
+                    }
                 }
                 continue;
             }

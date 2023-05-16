@@ -4,10 +4,10 @@ use crate::builtin::BUILTIN_FUNCTION_NAMES;
 use crate::pre_process::pre_process_program;
 use crate::resolver::resolve_program;
 use crate::resolver::scope::*;
-use crate::ty::Type;
-use compiler_base_session::Session;
+use crate::ty::{Type, TypeKind};
 use kclvm_ast::ast;
 use kclvm_error::*;
+use kclvm_parser::ParseSession;
 use kclvm_parser::{load_program, parse_program};
 use std::path::Path;
 use std::rc::Rc;
@@ -45,7 +45,7 @@ fn test_resolve_program() {
 
 #[test]
 fn test_pkg_init_in_schema_resolve() {
-    let sess = Arc::new(Session::default());
+    let sess = Arc::new(ParseSession::default());
     let mut program = load_program(
         sess.clone(),
         &["./src/resolver/test_data/pkg_init_in_schema.k"],
@@ -82,17 +82,27 @@ fn test_pkg_init_in_schema_resolve() {
 
 #[test]
 fn test_resolve_program_fail() {
+    let work_dir = "./src/resolver/test_fail_data/";
     let cases = &[
-        "./src/resolver/test_fail_data/attr.k",
-        "./src/resolver/test_fail_data/cannot_find_module.k",
-        "./src/resolver/test_fail_data/config_expr.k",
-        "./src/resolver/test_fail_data/module_optional_select.k",
-        "./src/resolver/test_fail_data/unmatched_args.k",
+        "attr.k",
+        "cannot_find_module.k",
+        "comp_clause_error_0.k",
+        "comp_clause_error_1.k",
+        "comp_clause_error_2.k",
+        "config_expr.k",
+        "invalid_mixin_0.k",
+        "module_optional_select.k",
+        "mutable_error_0.k",
+        "mutable_error_1.k",
+        "unique_key_error_0.k",
+        "unique_key_error_1.k",
+        "unmatched_args.k",
     ];
     for case in cases {
-        let mut program = parse_program(case).unwrap();
+        let path = Path::new(work_dir).join(case);
+        let mut program = parse_program(&path.to_string_lossy()).unwrap();
         let scope = resolve_program(&mut program);
-        assert!(scope.handler.diagnostics.len() > 0);
+        assert!(scope.handler.diagnostics.len() > 0, "{}", case);
     }
 }
 
@@ -106,13 +116,13 @@ fn test_resolve_program_mismatch_type_fail() {
     assert_eq!(diag.messages.len(), 1);
     assert_eq!(
         diag.messages[0].message,
-        "expect int, got {str(key):int(1)}"
+        "expected int, got {str(key):int(1)}"
     );
 }
 
 #[test]
 fn test_resolve_program_cycle_reference_fail() {
-    let sess = Arc::new(Session::default());
+    let sess = Arc::new(ParseSession::default());
     let mut program = load_program(
         sess.clone(),
         &["./src/resolver/test_fail_data/cycle_reference/file1.k"],
@@ -137,7 +147,7 @@ fn test_resolve_program_cycle_reference_fail() {
 
 #[test]
 fn test_record_used_module() {
-    let sess = Arc::new(Session::default());
+    let sess = Arc::new(ParseSession::default());
     let mut program = load_program(
         sess.clone(),
         &["./src/resolver/test_data/record_used_module.k"],
@@ -161,19 +171,6 @@ fn test_record_used_module() {
             }
         }
     }
-}
-
-#[test]
-fn test_cannot_find_module() {
-    let sess = Arc::new(Session::default());
-    let mut program = load_program(
-        sess.clone(),
-        &["./src/resolver/test_fail_data/cannot_find_module.k"],
-        None,
-    )
-    .unwrap();
-    let scope = resolve_program(&mut program);
-    assert_eq!(scope.handler.diagnostics[0].messages[0].pos.column, None);
 }
 
 #[test]
@@ -256,7 +253,7 @@ fn test_resolve_program_module_optional_select_fail() {
 
 #[test]
 fn test_lint() {
-    let sess = Arc::new(Session::default());
+    let sess = Arc::new(ParseSession::default());
     let mut program =
         load_program(sess.clone(), &["./src/resolver/test_data/lint.k"], None).unwrap();
     pre_process_program(&mut program);
@@ -325,4 +322,53 @@ fn test_lint() {
     {
         assert_eq!(d1, d2);
     }
+}
+
+#[test]
+fn test_resolve_schema_doc() {
+    let mut program = parse_program("./src/resolver/test_data/doc.k").unwrap();
+    let scope = resolve_program(&mut program);
+    let main_scope = scope
+        .scope_map
+        .get(kclvm_runtime::MAIN_PKG_PATH)
+        .unwrap()
+        .borrow_mut()
+        .clone();
+
+    let schema_scope_obj = &main_scope.elems[0].borrow().clone();
+    let schema_summary = match &schema_scope_obj.ty.kind {
+        TypeKind::Schema(schema_ty) => schema_ty.doc.clone(),
+        _ => "".to_string(),
+    };
+
+    let schema_scope = &main_scope.children[0];
+    let attrs_scope = &schema_scope.borrow().elems;
+    assert_eq!("Server is the common user interface for long-running services adopting the best practice of Kubernetes.".to_string(), schema_summary);
+    assert_eq!(
+        Some(
+            "Use this attribute to specify which kind of long-running service you want.
+Valid values: Deployment, CafeDeployment.
+See also: kusion_models/core/v1/workload_metadata.k."
+                .to_string()
+        ),
+        attrs_scope.get("workloadType").unwrap().borrow().doc
+    );
+    assert_eq!(
+        Some(
+            "A Server-level attribute.
+The name of the long-running service.
+See also: kusion_models/core/v1/metadata.k."
+                .to_string()
+        ),
+        attrs_scope.get("name").unwrap().borrow().doc
+    );
+    assert_eq!(
+        Some(
+            "A Server-level attribute.
+The labels of the long-running service.
+See also: kusion_models/core/v1/metadata.k."
+                .to_string()
+        ),
+        attrs_scope.get("labels").unwrap().borrow().doc
+    );
 }

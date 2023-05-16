@@ -17,7 +17,7 @@
 
 ## Introduction
 
-Kusion Configuration Language (KCL) is an open-source, constraint-based record and functional language. KCL improves the complexity of writing numerous complex configurations, such as cloud native scenarios, through its mature programming language technology and practice. It is dedicated to building better modularity, scalability, and stability around configurations, simpler logic writing, faster automation, and great ecological extensibility.
+Kusion Configuration Language (KCL) is an open-source, constraint-based record and functional language. KCL improves the writing of numerous complex configurations, such as cloud native scenarios, through its mature programming language technology and practice. It is dedicated to building better modularity, scalability, and stability around configurations, simpler logic writing, faster automation, and great ecological extensibility.
 
 ## What is it for?
 
@@ -43,6 +43,7 @@ You can use KCL to
 + **API affinity**: Native support for ecological API specifications such as [OpenAPI](https://github.com/KusionStack/kcl-openapi), Kubernetes CRD, Kubernetes YAML spec.
 + **Developer-friendly**: Friendly development experiences with rich [language tools](https://kcl-lang.io/docs/tools/cli/kcl/) (Format, Lint, Test, Vet, Doc, etc.) and [IDE plugins](https://github.com/KusionStack/vscode-kcl).
 + **Safety & maintainable**: Domain-oriented, no system-level functions such as native threads and IO, low noise and security risk, easy maintenance and governance.
++ **Integrations**: Mutate and validate manifests through [Kustomize KCL Plugin](https://github.com/KusionStack/kustomize-kcl), [Helm KCL Plugin](https://github.com/KusionStack/helm-kcl) or [KPT KCL SDK](https://github.com/KusionStack/kpt-kcl-sdk).
 + **Production-ready**: Widely used in production practices of platform engineering and automation at Ant Group.
 
 ## How to choose?

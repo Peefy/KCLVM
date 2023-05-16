@@ -1,7 +1,15 @@
+use std::collections::HashMap;
+
 use kclvm_ast::ast;
-use kclvm_config::settings::{SettingsFile, SettingsPathBuf};
+use kclvm_config::{
+    modfile::get_vendor_home,
+    settings::{SettingsFile, SettingsPathBuf},
+};
+use kclvm_query::r#override::parse_override_spec;
 use kclvm_runtime::ValueRef;
 use serde::{Deserialize, Serialize};
+
+const RESULT_SIZE: usize = 2048 * 2048;
 
 #[allow(non_camel_case_types)]
 pub type kclvm_char_t = i8;
@@ -12,35 +20,43 @@ pub type kclvm_context_t = std::ffi::c_void;
 #[allow(non_camel_case_types)]
 pub type kclvm_value_ref_t = std::ffi::c_void;
 
+/// ExecProgramArgs denotes the configuration required to execute the KCL program.
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct ExecProgramArgs {
     pub work_dir: Option<String>,
     pub k_filename_list: Vec<String>,
+    // -E key=value
+    #[serde(skip)]
+    pub package_maps: HashMap<String, String>,
     pub k_code_list: Vec<String>,
-
+    // -D key=value
     pub args: Vec<ast::CmdArgSpec>,
+    // -O override_spec
     pub overrides: Vec<ast::OverrideSpec>,
-
+    // -S path_selector
+    #[serde(skip)]
+    pub path_selector: Vec<String>,
     pub disable_yaml_result: bool,
+    // Whether to apply overrides on the source code.
     pub print_override_ast: bool,
-
     // -r --strict-range-check
     pub strict_range_check: bool,
-
     // -n --disable-none
     pub disable_none: bool,
     // -v --verbose
     pub verbose: i32,
-
     // -d --debug
     pub debug: i32,
-
     // yaml/json: sort keys
     pub sort_keys: bool,
     // include schema type path in JSON/YAML result
     pub include_schema_type_path: bool,
+    // plugin_agent is the address of plugin.
+    #[serde(skip)]
+    pub plugin_agent: u64,
 }
 
+/// ExecProgramResult denotes the running result of the KCL program.
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct ExecProgramResult {
     pub json_result: String,
@@ -64,19 +80,24 @@ impl ExecProgramArgs {
         self.k_filename_list.iter().map(|s| s.as_str()).collect()
     }
 
+    /// Get the [`kclvm_parser::LoadProgramOptions`] from the [`kclvm_runner::ExecProgramArgs`]
     pub fn get_load_program_options(&self) -> kclvm_parser::LoadProgramOptions {
         kclvm_parser::LoadProgramOptions {
-            work_dir: self.work_dir.clone().unwrap_or_else(|| "".to_string()),
+            work_dir: self.work_dir.clone().unwrap_or_default(),
+            vendor_dirs: vec![get_vendor_home()],
+            package_maps: self.package_maps.clone(),
             k_code_list: self.k_code_list.clone(),
             cmd_args: self.args.clone(),
             cmd_overrides: self.overrides.clone(),
+            load_plugins: self.plugin_agent > 0,
             ..Default::default()
         }
     }
 }
 
-impl From<SettingsFile> for ExecProgramArgs {
-    fn from(settings: SettingsFile) -> Self {
+impl TryFrom<SettingsFile> for ExecProgramArgs {
+    type Error = anyhow::Error;
+    fn try_from(settings: SettingsFile) -> Result<Self, Self::Error> {
         let mut args = Self::default();
         if let Some(cli_configs) = settings.kcl_cli_configs {
             args.k_filename_list = cli_configs.files.unwrap_or_default();
@@ -87,6 +108,11 @@ impl From<SettingsFile> for ExecProgramArgs {
             args.disable_none = cli_configs.disable_none.unwrap_or_default();
             args.verbose = cli_configs.verbose.unwrap_or_default() as i32;
             args.debug = cli_configs.debug.unwrap_or_default() as i32;
+            for override_str in &cli_configs.overrides.unwrap_or_default() {
+                args.overrides.push(parse_override_spec(override_str)?);
+            }
+            args.path_selector = cli_configs.path_selector.unwrap_or_default();
+            args.package_maps = cli_configs.package_maps.unwrap_or(HashMap::default())
         }
         if let Some(options) = settings.kcl_options {
             args.args = options
@@ -97,15 +123,16 @@ impl From<SettingsFile> for ExecProgramArgs {
                 })
                 .collect();
         }
-        args
+        Ok(args)
     }
 }
 
-impl From<SettingsPathBuf> for ExecProgramArgs {
-    fn from(s: SettingsPathBuf) -> Self {
-        let mut args: ExecProgramArgs = s.settings().clone().into();
+impl TryFrom<SettingsPathBuf> for ExecProgramArgs {
+    type Error = anyhow::Error;
+    fn try_from(s: SettingsPathBuf) -> Result<Self, Self::Error> {
+        let mut args: ExecProgramArgs = s.settings().clone().try_into()?;
         args.work_dir = s.path().clone().map(|p| p.to_string_lossy().to_string());
-        args
+        Ok(args)
     }
 }
 
@@ -235,13 +262,13 @@ impl KclvmRunner {
         let disable_none = args.disable_none as i32;
         let disable_schema_check = 0; // todo
         let list_option_mode = 0; // todo
-        let debug_mode = args.debug as i32;
+        let debug_mode = args.debug;
 
-        let mut result = vec![0u8; 1024 * 1024];
+        let mut result = vec![0u8; RESULT_SIZE];
         let result_buffer_len = result.len() as i32 - 1;
         let result_buffer = result.as_mut_ptr() as *mut i8;
 
-        let mut warn_data = vec![0u8; 1024 * 1024];
+        let mut warn_data = vec![0u8; RESULT_SIZE];
         let warn_buffer_len = warn_data.len() as i32 - 1;
         let warn_buffer = warn_data.as_mut_ptr() as *mut i8;
 
@@ -261,7 +288,9 @@ impl KclvmRunner {
             warn_buffer,
         );
 
-        if n > 0 {
+        if n == 0 {
+            Ok("".to_string())
+        } else if n > 0 {
             let return_len = n;
             let s = std::str::from_utf8(&result[0..return_len as usize]).unwrap();
             wrap_msg_in_result(s)

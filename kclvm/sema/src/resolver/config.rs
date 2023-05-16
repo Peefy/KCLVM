@@ -5,10 +5,11 @@ use super::{
     scope::{ScopeKind, ScopeObject, ScopeObjectKind},
     Resolver,
 };
+use crate::ty::sup;
 use crate::ty::SchemaType;
 use crate::ty::{Type, TypeKind};
-use crate::{resolver::pos::GetPos, ty::sup};
 use kclvm_ast::ast;
+use kclvm_ast::pos::GetPos;
 use kclvm_error::{ErrorKind, Message, Position, Style};
 
 /// Config Expr type check state.
@@ -43,6 +44,7 @@ impl<'ctx> Resolver<'ctx> {
             ty,
             kind: ScopeObjectKind::Attribute,
             used: false,
+            doc: None,
         }
     }
 
@@ -139,6 +141,9 @@ impl<'ctx> Resolver<'ctx> {
                         }
                     }
                     ast::Expr::StringLit(string_lit) => vec![string_lit.value.clone()],
+                    // There may be a valid configuration key for joined string and missing expressions here,
+                    // and we will restore it to a null value to avoid unfriendly error messages.
+                    ast::Expr::JoinedString(_) | ast::Expr::Missing(_) => vec!["".to_string()],
                     _ => return SwitchConfigContextState::KeepConfigUnchanged as usize,
                 };
                 self.switch_config_expr_context_by_names(&names)
@@ -157,7 +162,7 @@ impl<'ctx> Resolver<'ctx> {
     ///
     /// Returns:
     ///     push stack times
-    pub(crate) fn switch_config_exprr_context_by_name(&mut self, name: &str) -> usize {
+    pub(crate) fn switch_config_expr_context_by_name(&mut self, name: &str) -> usize {
         let ctx_obj = self.find_schema_attr_obj_from_schema_expr_stack(name);
         self.switch_config_expr_context(ctx_obj) as usize
     }
@@ -218,7 +223,7 @@ impl<'ctx> Resolver<'ctx> {
     pub(crate) fn switch_config_expr_context_by_names(&mut self, names: &[String]) -> usize {
         let mut stack_depth = 0;
         for name in names {
-            stack_depth += self.switch_config_exprr_context_by_name(name);
+            stack_depth += self.switch_config_expr_context_by_name(name);
         }
         stack_depth
     }
@@ -285,7 +290,7 @@ impl<'ctx> Resolver<'ctx> {
                 let mut stack_depth = 0;
                 for name in &names {
                     self.check_config_expr_by_key_name(name, key);
-                    stack_depth += self.switch_config_exprr_context_by_name(name);
+                    stack_depth += self.switch_config_expr_context_by_name(name);
                 }
                 let mut val_ty = self.expr(value);
                 for _ in 0..names.len() - 1 {
@@ -391,7 +396,7 @@ impl<'ctx> Resolver<'ctx> {
             let op = &item.node.operation;
             let mut stack_depth: usize = 0;
             self.check_config_entry(key, value);
-            stack_depth += self.switch_config_expr_context_by_key(key) as usize;
+            stack_depth += self.switch_config_expr_context_by_key(key);
             let mut has_insert_index = false;
             let val_ty = match key {
                 Some(key) => match &key.node {
@@ -417,6 +422,7 @@ impl<'ctx> Resolver<'ctx> {
                                     ty: val_ty.clone(),
                                     kind: ScopeObjectKind::Attribute,
                                     used: false,
+                                    doc: None,
                                 },
                             );
                             key_ty
@@ -450,6 +456,7 @@ impl<'ctx> Resolver<'ctx> {
                                     ty: val_ty.clone(),
                                     kind: ScopeObjectKind::Attribute,
                                     used: false,
+                                    doc: None,
                                 },
                             );
                         }

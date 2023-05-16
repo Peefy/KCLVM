@@ -41,7 +41,44 @@ use std::collections::HashMap;
 use compiler_base_span::{Loc, Span};
 
 use super::token;
-use crate::node_ref;
+use crate::{node_ref, pos::ContainsPos};
+use kclvm_error::Position;
+
+/// PosTuple denotes the tuple `(filename, line, column, end_line, end_column)`.
+pub type PosTuple = (String, u64, u64, u64, u64);
+/// Pos denotes the struct tuple `(filename, line, column, end_line, end_column)`.
+#[derive(Clone)]
+pub struct Pos(String, u64, u64, u64, u64);
+
+impl From<PosTuple> for Pos {
+    fn from(value: PosTuple) -> Self {
+        Self(value.0, value.1, value.2, value.3, value.4)
+    }
+}
+
+impl Into<PosTuple> for Pos {
+    fn into(self) -> PosTuple {
+        (self.0, self.1, self.2, self.3, self.4)
+    }
+}
+
+impl Into<(Position, Position)> for Pos {
+    fn into(self) -> (Position, Position) {
+        (
+            Position {
+                filename: self.0.clone(),
+                line: self.1,
+                column: Some(self.2),
+            },
+            Position {
+                filename: self.0,
+                line: self.3,
+                column: Some(self.4),
+            },
+        )
+    }
+}
+
 /// Node is the file, line and column number information
 /// that all AST nodes need to contain.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -95,7 +132,7 @@ impl<T> Node<T> {
         }
     }
 
-    pub fn node_with_pos(node: T, pos: (String, u64, u64, u64, u64)) -> Self {
+    pub fn node_with_pos(node: T, pos: PosTuple) -> Self {
         Self {
             node,
             filename: pos.0.clone(),
@@ -106,7 +143,7 @@ impl<T> Node<T> {
         }
     }
 
-    pub fn pos(&self) -> (String, u64, u64, u64, u64) {
+    pub fn pos(&self) -> PosTuple {
         (
             self.filename.clone(),
             self.line,
@@ -116,7 +153,7 @@ impl<T> Node<T> {
         )
     }
 
-    pub fn set_pos(&mut self, pos: (String, u64, u64, u64, u64)) {
+    pub fn set_pos(&mut self, pos: PosTuple) {
         self.filename = pos.0.clone();
         self.line = pos.1;
         self.column = pos.2;
@@ -147,6 +184,24 @@ impl TryInto<Node<Identifier>> for Node<Expr> {
                 end_column: self.end_column,
             }),
             _ => Err("invalid identifier"),
+        }
+    }
+}
+
+impl Node<Expr> {
+    /// Into a missing identifier.
+    pub fn into_missing_identifier(&self) -> Node<Identifier> {
+        Node {
+            node: Identifier {
+                names: vec![],
+                pkgpath: String::new(),
+                ctx: ExprContext::Load,
+            },
+            filename: self.filename.clone(),
+            line: self.line,
+            column: self.column,
+            end_line: self.end_line,
+            end_column: self.end_column,
         }
     }
 }
@@ -191,8 +246,9 @@ pub struct OverrideSpec {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum OverrideAction {
-    CreateOrUpdate,
     Delete,
+    #[serde(other)]
+    CreateOrUpdate,
 }
 
 /// Program is the AST collection of all files of the running KCL program.
@@ -201,8 +257,6 @@ pub struct Program {
     pub root: String,
     pub main: String,
     pub pkgs: HashMap<String, Vec<Module>>,
-    pub cmd_args: Vec<CmdArgSpec>,
-    pub cmd_overrides: Vec<OverrideSpec>,
 }
 
 impl Program {
@@ -212,6 +266,17 @@ impl Program {
             Some(modules) => modules.iter().map(|m| m.filename.clone()).collect(),
             None => vec![],
         }
+    }
+    /// Get stmt on position
+    pub fn pos_to_stmt(&self, pos: &Position) -> Option<Node<Stmt>> {
+        for (_, v) in &self.pkgs {
+            for m in v {
+                if m.filename == pos.filename {
+                    return m.pos_to_stmt(pos);
+                }
+            }
+        }
+        None
     }
 }
 
@@ -236,6 +301,16 @@ impl Module {
             }
         }
         return stmts;
+    }
+
+    /// Get stmt on position
+    pub fn pos_to_stmt(&self, pos: &Position) -> Option<Node<Stmt>> {
+        for stmt in &self.body {
+            if stmt.contains_pos(pos) {
+                return Some(*stmt.clone());
+            }
+        }
+        None
     }
 }
 
@@ -395,7 +470,9 @@ impl SchemaStmt {
         fn loop_body(body: &[NodeRef<Stmt>], attr_list: &mut Vec<(u64, u64, String)>) {
             for stmt in body {
                 match &stmt.node {
-                    Stmt::Unification(unification_stmt) => {
+                    Stmt::Unification(unification_stmt)
+                        if !unification_stmt.target.node.names.is_empty() =>
+                    {
                         attr_list.push((
                             unification_stmt.target.line,
                             unification_stmt.target.column,
@@ -404,19 +481,23 @@ impl SchemaStmt {
                     }
                     Stmt::Assign(assign_stmt) => {
                         for target in &assign_stmt.targets {
-                            attr_list.push((
-                                target.line,
-                                target.column,
-                                target.node.names[0].to_string(),
-                            ));
+                            if !target.node.names.is_empty() {
+                                attr_list.push((
+                                    target.line,
+                                    target.column,
+                                    target.node.names[0].to_string(),
+                                ));
+                            }
                         }
                     }
                     Stmt::AugAssign(aug_assign_stmt) => {
-                        attr_list.push((
-                            aug_assign_stmt.target.line,
-                            aug_assign_stmt.target.column,
-                            aug_assign_stmt.target.node.names[0].to_string(),
-                        ));
+                        if !aug_assign_stmt.target.node.names.is_empty() {
+                            attr_list.push((
+                                aug_assign_stmt.target.line,
+                                aug_assign_stmt.target.column,
+                                aug_assign_stmt.target.node.names[0].to_string(),
+                            ));
+                        }
                     }
                     Stmt::If(if_stmt) => {
                         loop_body(&if_stmt.body, attr_list);
@@ -532,6 +613,8 @@ pub enum Expr {
     NameConstantLit(NameConstantLit),
     JoinedString(JoinedString),
     FormattedValue(FormattedValue),
+    /// A place holder for expression parse error.
+    Missing(MissingExpr),
 }
 
 /// Identifier, e.g.
@@ -652,9 +735,9 @@ pub enum QuantOperation {
     Map,
 }
 
-impl Into<String> for QuantOperation {
-    fn into(self) -> String {
-        let s = match self {
+impl From<QuantOperation> for String {
+    fn from(val: QuantOperation) -> Self {
+        let s = match val {
             QuantOperation::All => "all",
             QuantOperation::Any => "any",
             QuantOperation::Filter => "filter",
@@ -1035,12 +1118,22 @@ pub enum NameConstant {
 }
 
 impl NameConstant {
+    /// Returns the symbol
     pub fn symbol(&self) -> &'static str {
         match self {
             NameConstant::True => "True",
             NameConstant::False => "False",
             NameConstant::None => "None",
             NameConstant::Undefined => "Undefined",
+        }
+    }
+
+    // Returns the json value
+    pub fn json_value(&self) -> &'static str {
+        match self {
+            NameConstant::True => "true",
+            NameConstant::False => "false",
+            NameConstant::None | NameConstant::Undefined => "null",
         }
     }
 }
@@ -1077,6 +1170,10 @@ pub struct FormattedValue {
     pub value: NodeRef<Expr>,
     pub format_spec: Option<String>,
 }
+
+/// MissingExpr placeholder for error recovery.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct MissingExpr;
 
 /// Comment, e.g.
 /// ```kcl

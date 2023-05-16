@@ -1,6 +1,6 @@
 [package]
 name = "kclvm-config"
-version = "0.4.5"
+version = "0.4.6"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.8.7"
+serde_json = "1.0"
 indexmap = "1.0"
 ahash = "0.7.2"
 toml = "0.5.8"
@@ -21,3 +22,4 @@ anyhow = "1.0"
 
 kclvm-version = {path = "../version", version = "0.4.5"}
 kclvm-utils = {path = "../utils", version = "0.4.5"}
+dirs = "5.0.0"

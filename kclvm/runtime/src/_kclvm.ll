@@ -126,6 +126,10 @@ declare %kclvm_value_ref_t* @kclvm_builtin_str_lower(%kclvm_context_t* %_ctx, %k
 
 declare %kclvm_value_ref_t* @kclvm_builtin_str_lstrip(%kclvm_context_t* %_ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
 
+declare %kclvm_value_ref_t* @kclvm_builtin_str_removeprefix(%kclvm_context_t* %_ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+
+declare %kclvm_value_ref_t* @kclvm_builtin_str_removesuffix(%kclvm_context_t* %_ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
+
 declare %kclvm_value_ref_t* @kclvm_builtin_str_replace(%kclvm_context_t* %_ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
 
 declare %kclvm_value_ref_t* @kclvm_builtin_str_rfind(%kclvm_context_t* %_ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
@@ -510,9 +514,9 @@ declare %kclvm_value_ref_t* @kclvm_value_Float(%kclvm_float_t %v);
 
 declare %kclvm_float_t* @kclvm_value_Float_ptr(%kclvm_value_ref_t* %p);
 
-declare %kclvm_value_ref_t* @kclvm_value_Function(i64* %fn_ptr, %kclvm_value_ref_t* %closure, %kclvm_char_t* %external_name);
+declare %kclvm_value_ref_t* @kclvm_value_Function(i64* %fn_ptr, %kclvm_value_ref_t* %closure, %kclvm_char_t* %name, %kclvm_bool_t %is_external);
 
-declare %kclvm_value_ref_t* @kclvm_value_Function_using_ptr(i64* %fn_ptr);
+declare %kclvm_value_ref_t* @kclvm_value_Function_using_ptr(i64* %fn_ptr, %kclvm_char_t* %name);
 
 declare %kclvm_value_ref_t* @kclvm_value_Int(%kclvm_int_t %v);
 

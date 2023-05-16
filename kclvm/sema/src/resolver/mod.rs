@@ -2,13 +2,13 @@ mod arg;
 mod attr;
 mod calculation;
 mod config;
+mod doc;
 mod format;
 pub mod global;
 mod import;
 mod r#loop;
 mod node;
 mod para;
-pub mod pos;
 mod schema;
 pub mod scope;
 mod ty;
@@ -27,7 +27,6 @@ use crate::resolver::scope::ScopeObject;
 use crate::resolver::ty_alias::process_program_type_alias;
 use crate::{resolver::scope::Scope, ty::SchemaType};
 use kclvm_ast::ast::Program;
-use kclvm_ast::walker::MutSelfTypedResultWalker;
 use kclvm_error::*;
 
 use crate::ty::TypeContext;
@@ -40,6 +39,7 @@ pub struct Resolver<'ctx> {
     pub program: &'ctx Program,
     pub scope_map: IndexMap<String, Rc<RefCell<Scope>>>,
     pub scope: Rc<RefCell<Scope>>,
+    pub scope_level: usize,
     pub builtin_scope: Rc<RefCell<Scope>>,
     pub ctx: Context,
     pub options: Options,
@@ -56,6 +56,7 @@ impl<'ctx> Resolver<'ctx> {
             scope_map: IndexMap::default(),
             builtin_scope,
             scope,
+            scope_level: 0,
             ctx: Context::default(),
             options,
             handler: Handler::default(),
@@ -72,7 +73,7 @@ impl<'ctx> Resolver<'ctx> {
                 for module in modules {
                     self.ctx.filename = module.filename.to_string();
                     for stmt in &module.body {
-                        self.walk_stmt(&stmt.node);
+                        self.stmt(&stmt);
                     }
                     if self.options.lint_check {
                         self.lint_check_module(module);
@@ -113,6 +114,8 @@ pub struct Context {
     pub local_vars: Vec<String>,
     /// Import pkgpath and name
     pub import_names: IndexMap<String, IndexMap<String, String>>,
+    /// Global names at top level of the program.
+    pub global_names: IndexMap<String, IndexMap<String, Position>>,
     /// Are we resolving the left value.
     pub l_value: bool,
     /// Are we resolving the statement start position.
