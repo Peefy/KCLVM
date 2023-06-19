@@ -192,6 +192,7 @@ fn test_run_command() {
     test_vet_cmd();
     test_run_command_with_import();
     test_run_command_with_konfig();
+    test_load_cache_with_different_pkg();
 }
 
 fn test_run_command_with_import() {
@@ -224,6 +225,50 @@ fn test_run_command_with_konfig() {
             vendor_path.canonicalize().unwrap().display().to_string(),
         );
     }
+}
+
+fn test_load_cache_with_different_pkg() {
+    let main_path = PathBuf::from("./src/test_data/cache/main/main.k");
+    let main_v1_path = PathBuf::from("./src/test_data/cache/main/main.k.v1");
+    let main_v2_path = PathBuf::from("./src/test_data/cache/main/main.k.v2");
+    let kcl1_v1_path = PathBuf::from("./src/test_data/cache/v1/kcl1");
+    let kcl1_v2_path = PathBuf::from("./src/test_data/cache/v2/kcl1");
+
+    // Copy the content from main.k.v1 to main.k
+    fs::copy(main_v1_path, &main_path).unwrap();
+    let matches = app().get_matches_from(&[
+        ROOT_CMD,
+        "run",
+        main_path.to_str().unwrap(),
+        "-E",
+        format!("kcl1={}", kcl1_v1_path.display()).as_str(),
+    ]);
+
+    let matches = matches.subcommand_matches("run").unwrap();
+    let mut buf = Vec::new();
+    run_command(matches, &mut buf).unwrap();
+    assert_eq!(
+        String::from_utf8(buf).unwrap(),
+        "The_first_kcl_program: 1\n"
+    );
+
+    // Copy the content from main.k.v2 to main.k
+    fs::copy(main_v2_path, &main_path).unwrap();
+    let matches = app().get_matches_from(&[
+        ROOT_CMD,
+        "run",
+        main_path.to_str().unwrap(),
+        "-E",
+        format!("kcl1={}", kcl1_v2_path.display()).as_str(),
+    ]);
+
+    let matches = matches.subcommand_matches("run").unwrap();
+    let mut buf = Vec::new();
+    run_command(matches, &mut buf).unwrap();
+    assert_eq!(
+        String::from_utf8(buf).unwrap(),
+        "The_first_kcl_program: 1\nkcl1_schema:\n  name: kcl1\n"
+    );
 }
 
 /// rust crate [`gag`]: https://crates.io/crates/gag

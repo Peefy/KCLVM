@@ -21,6 +21,8 @@ use kclvm_config::modfile::{
 use kclvm_error::{ErrorKind, Message, Position, Style};
 use kclvm_sema::plugin::PLUGIN_MODULE_PREFIX;
 use kclvm_utils::path::PathPrefix;
+use kclvm_utils::pkgpath::parse_external_pkg_name;
+use kclvm_utils::pkgpath::rm_external_pkg_name;
 
 use lexer::parse_token_streams;
 use parser::Parser;
@@ -30,7 +32,7 @@ use std::sync::Arc;
 
 use kclvm_span::create_session_globals_then;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 /// [`PkgInfo`] is some basic information about a kcl package.
 pub(crate) struct PkgInfo {
     /// the name of the kcl package.
@@ -395,6 +397,7 @@ impl Loader {
                         &m.filename,
                         import_spec.path.as_str(),
                     );
+                    import_spec.pkg_name = pkg_name.to_string();
                     // Load the import package source code and compile.
                     if let Some(pkg_info) = self.load_package(
                         &pkgroot,
@@ -405,6 +408,7 @@ impl Loader {
                     )? {
                         // Add the external package name as prefix of the [`kclvm_ast::ImportStmt`]'s member [`path`].
                         import_spec.path = pkg_info.pkg_path.to_string();
+                        import_spec.pkg_name = pkg_info.pkg_name
                     }
                 }
             }
@@ -593,12 +597,7 @@ impl Loader {
             pathbuf.push(s);
         }
 
-        let pkgpath: String = pathbuf.as_path().to_str().unwrap().to_string();
-        let abspath: String = std::path::Path::new(&pkgroot)
-            .join(pkgpath)
-            .to_str()
-            .unwrap()
-            .to_string();
+        let abspath: String = pathbuf.as_path().to_str().unwrap().to_string();
 
         if std::path::Path::new(abspath.as_str()).exists() {
             return self.get_dir_files(abspath.as_str());
@@ -693,8 +692,7 @@ impl Loader {
     /// - [`is_external_pkg`] will return an error if the package's source files cannot be found.
     /// - The name of the external package could not be resolved from [`pkg_path`].
     fn is_external_pkg(&self, pkg_path: &str) -> Result<Option<PkgInfo>, String> {
-        let pkg_name = self.parse_external_pkg_name(pkg_path)?;
-
+        let pkg_name = parse_external_pkg_name(pkg_path)?;
         let external_pkg_root = if let Some(root) = self.opts.package_maps.get(&pkg_name) {
             PathBuf::from(root).join(KCL_MOD_FILE)
         } else {
@@ -711,7 +709,7 @@ impl Loader {
                 Some(root) => {
                     let k_files = self.get_pkg_kfile_list(
                         &root.display().to_string(),
-                        &self.rm_external_pkg_name(pkg_path)?,
+                        &rm_external_pkg_name(pkg_path)?,
                     )?;
                     PkgInfo::new(
                         pkg_name.to_string(),
@@ -724,37 +722,6 @@ impl Loader {
             }));
         } else {
             return Ok(None);
-        }
-    }
-
-    /// Remove the external package name prefix from the current import absolute path.
-    ///
-    /// # Note
-    /// [`rm_external_pkg_name`] just remove the prefix of the import path,
-    /// so it can't distinguish whether the current path is an internal package or an external package.
-    ///
-    /// # Error
-    /// An error is returned if an empty string is passed in.
-    fn rm_external_pkg_name(&self, pkgpath: &str) -> Result<String, String> {
-        Ok(pkgpath
-            .to_string()
-            .trim_start_matches(self.parse_external_pkg_name(pkgpath)?.as_str())
-            .to_string())
-    }
-
-    /// Remove the external package name prefix from the current import absolute path.
-    ///
-    /// # Note
-    /// [`rm_external_pkg_name`] just remove the prefix of the import path,
-    /// so it can't distinguish whether the current path is an internal package or an external package.
-    ///
-    /// # Error
-    /// An error is returned if an empty string is passed in.
-    fn parse_external_pkg_name(&self, pkgpath: &str) -> Result<String, String> {
-        let mut names = pkgpath.splitn(2, '.');
-        match names.next() {
-            Some(it) => Ok(it.to_string()),
-            None => Err(format!("Invalid external package name `{}`", pkgpath)),
         }
     }
 
