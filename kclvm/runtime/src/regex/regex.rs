@@ -40,6 +40,8 @@ pub unsafe extern "C" fn kclvm_regex_match(
                 }
                 _ => return kclvm_value_Bool(0),
             }
+        } else {
+            panic!("match() missing the positional arguments: 'pattern' or invalid 'pattern' type")
         }
     }
 
@@ -65,7 +67,13 @@ pub unsafe extern "C" fn kclvm_regex_replace(
                     let s = re.replacen(string.as_ref(), count as usize, replace.as_ref() as &str);
                     return ValueRef::str(&s).into_raw();
                 }
+            } else {
+                panic!(
+                    "match() missing the positional arguments: 'replace' or invalid 'replace' type"
+                )
             }
+        } else {
+            panic!("match() missing the positional arguments: 'pattern' or invalid 'pattern' type")
         }
     }
     panic!("replace() missing 3 required positional arguments: 'string', 'pattern', and 'replace");
