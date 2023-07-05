@@ -212,7 +212,7 @@ declare %kclvm_size_t @kclvm_context_symbol_num(%kclvm_context_t* %p);
 
 declare %kclvm_value_t* @kclvm_context_symbol_value(%kclvm_context_t* %p, %kclvm_size_t %i);
 
-declare %kclvm_value_ref_t* @kclvm_convert_collection_value(%kclvm_value_ref_t* %value, %kclvm_char_t* %tpe);
+declare %kclvm_value_ref_t* @kclvm_convert_collection_value(%kclvm_value_ref_t* %value, %kclvm_char_t* %tpe, %kclvm_value_ref_t* %is_in_schema);
 
 declare %kclvm_value_ref_t* @kclvm_crypto_md5(%kclvm_context_t* %_ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %_kwargs);
 
@@ -428,7 +428,7 @@ declare %kclvm_value_ref_t* @kclvm_schema_instances(%kclvm_context_t* %ctx, %kcl
 
 declare void @kclvm_schema_optional_check(%kclvm_value_ref_t* %p);
 
-declare void @kclvm_schema_value_check(%kclvm_value_ref_t* %schema_value, %kclvm_value_ref_t* %schema_config, %kclvm_value_ref_t* %_config_meta, %kclvm_char_t* %schema_name, %kclvm_value_ref_t* %index_sign_value, %kclvm_char_t* %_key_name, %kclvm_char_t* %key_type, %kclvm_char_t* %_value_type, %kclvm_bool_t %_any_other, %kclvm_bool_t %is_relaxed);
+declare void @kclvm_schema_value_check(%kclvm_value_ref_t* %schema_value, %kclvm_value_ref_t* %schema_config, %kclvm_value_ref_t* %_config_meta, %kclvm_char_t* %schema_name, %kclvm_value_ref_t* %index_sign_value, %kclvm_char_t* %key_name, %kclvm_char_t* %key_type, %kclvm_char_t* %value_type, %kclvm_bool_t %_any_other);
 
 declare %kclvm_value_ref_t* @kclvm_schema_value_new(%kclvm_context_t* %ctx, %kclvm_value_ref_t* %args, %kclvm_value_ref_t* %kwargs, %kclvm_value_ref_t* %schema_value_or_func, %kclvm_value_ref_t* %config, %kclvm_value_ref_t* %config_meta, %kclvm_char_t* %pkgpath);
 
