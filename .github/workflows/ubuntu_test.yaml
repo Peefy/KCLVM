@@ -6,7 +6,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     container:
-      image: kusionstack/kclvm-builder
+      image: kcllang/kcl-builder
     steps:
       - name: Check out code
         uses: actions/checkout@v3
@@ -42,7 +42,7 @@ jobs:
         run: export PATH=$PATH:$PWD/../_build/dist/ubuntu/kclvm/bin && make install-rustc-wasm && make && make test-runtime
         shell: bash
       - name: Install kpm
-        run: go install kusionstack.io/kpm@latest
+        run: go install kcl-lang.io/kpm@latest
 
       - name: Unit test
         working-directory: ./kclvm
@@ -57,3 +57,8 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path-to-lcov: ./kclvm/.kclvm/lcov.info
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: kcl-linux-amd64
+          path: _build/dist/ubuntu/kclvm
