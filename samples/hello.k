@@ -1,3 +1,6 @@
+import kcl_plugin.hello
+
+cc = hello.add(1, 2)
 name = "kcl"
 age = 1
 
