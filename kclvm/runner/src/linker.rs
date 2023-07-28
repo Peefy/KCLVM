@@ -67,6 +67,7 @@ impl Command {
         // Run command with cc.
         let mut cmd = build.try_get_compiler()?.to_command();
         self.add_args(libs, lib_path.to_string(), &mut cmd)?;
+        println!("ASd: {:?}", cmd);
         let result = cmd.output()?;
         if !result.status.success() {
             anyhow::bail!(
