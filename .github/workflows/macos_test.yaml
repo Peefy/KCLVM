@@ -95,4 +95,7 @@ jobs:
         run: ./internal/scripts/python-plugin/release.sh
         shell: bash
 
-      - 
+      - uses: actions/upload-artifact@v3
+        with:
+          name: kclvm-darwin-amd64-with-plugin
+          path: _build/kclvm-Darwin-latest.tar.gz
