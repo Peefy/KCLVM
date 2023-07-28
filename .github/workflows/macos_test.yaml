@@ -89,7 +89,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Build KCL
-        run: ./internal/scripts/python-plugin/build-kcl.sh
+        run: export PATH=$PATH:$PWD/../_build/python_dist/Darwin/kclvm/bin:/usr/local/opt/llvm@12/bin && ./internal/scripts/python-plugin/build-kcl.sh
         shell: bash
       - name: Release
         run: ./internal/scripts/python-plugin/release.sh
