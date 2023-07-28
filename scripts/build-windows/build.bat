@@ -4,6 +4,7 @@ setlocal
 
 cd %~dp0
 
+del "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC\\14.35.32215\\bin\\HostX64\\x64\\cl.exe"
 :: install kclvm-cli
 call .\\build_kclvm_dll.bat
 call .\\build_kclvm_cli.bat
