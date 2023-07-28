@@ -37,7 +37,6 @@ jobs:
       # Build kclvm-cli
       - run: |
           del "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC\\14.35.32215\\bin\\HostX64\\x64\\cl.exe"
-          gcm cl
           .\scripts\build-windows\build.bat
 
       # Set kclvm-cli path
