@@ -86,7 +86,7 @@ if [ -d $kcl_install_dir/lib/${py_lib_basename}/kclvm ]; then
 fi
 
 # Get site-packages.
-$kcl_install_dir/bin/kclvm -m pip install --upgrade -U kclvm
+# $kcl_install_dir/bin/kclvm -m pip install --upgrade -U kclvm
 
 # Install plugins
 cp -rf $topdir/plugins $kcl_install_dir/
