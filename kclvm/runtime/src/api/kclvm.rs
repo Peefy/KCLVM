@@ -429,6 +429,11 @@ impl Context {
                 kcl_func: "kclvm_main".to_string(),
                 ..Default::default()
             },
+            // Enbable list empty planning.
+            cfg: ContextConfig {
+                plan_empty_list: true,
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
