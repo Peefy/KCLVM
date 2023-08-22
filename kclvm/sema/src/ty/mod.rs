@@ -7,7 +7,7 @@ mod unify;
 mod walker;
 
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::fmt::Display;
 
 pub use constants::*;
 pub use context::{TypeContext, TypeInferMethods};
@@ -20,6 +20,56 @@ pub use walker::walk_type;
 
 #[cfg(test)]
 mod tests;
+
+#[derive(Debug, PartialEq)]
+pub struct UnsafeRef<T>(*const T);
+impl<T> Clone for UnsafeRef<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> AsRef<T> for UnsafeRef<T> {
+    fn as_ref(&self) -> &T {
+        unsafe { &*self.0 }
+    }
+}
+
+impl<T> Copy for UnsafeRef<T> {}
+
+impl<T> std::ops::Deref for UnsafeRef<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.0 }
+    }
+}
+
+impl<T> std::ops::DerefMut for UnsafeRef<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *(self.0 as *mut T) }
+    }
+}
+
+impl<T> Display for UnsafeRef<T>
+where
+    T: Display,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let t: &T = self;
+        write!(f, "{}", t)
+    }
+}
+
+impl<Type> UnsafeRef<Type> {
+    pub fn new(ty: Type) -> UnsafeRef<Type> {
+        UnsafeRef(&ty as *const Type)
+    }
+}
+
+/// TypeRef represents a reference to a type that exists to avoid copying types everywhere affecting
+/// performance. For example, for two instances that are both integer types, there is actually no
+/// difference between them, just use the unique pointer instead of `Rc` or `Arc`
+pub type TypeRef = UnsafeRef<Type>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Type {
@@ -103,11 +153,11 @@ pub enum TypeKind {
     /// A primitive string literal type.
     StrLit(String),
     /// The pointer of an array slice. Written as `[T]`.
-    List(Rc<Type>),
+    List(TypeRef),
     /// A map type. Written as `{kT, vT}`.
-    Dict(Rc<Type>, Rc<Type>),
+    Dict(TypeRef, TypeRef),
     /// A union type. Written as ty1 | ty2 | ... | tyn
-    Union(Vec<Rc<Type>>),
+    Union(Vec<TypeRef>),
     /// A schema type.
     Schema(SchemaType),
     /// A number multiplier type.
@@ -209,7 +259,7 @@ impl SchemaType {
         !self.is_instance && SCHEMA_MEMBER_FUNCTIONS.contains(&name)
     }
 
-    pub fn set_type_of_attr(&mut self, attr: &str, ty: Rc<Type>) {
+    pub fn set_type_of_attr(&mut self, attr: &str, ty: TypeRef) {
         match self.attrs.get_mut(attr) {
             Some(attr) => attr.ty = ty,
             None => {
@@ -228,8 +278,8 @@ impl SchemaType {
     }
 
     #[inline]
-    pub fn get_type_of_attr(&self, attr: &str) -> Option<Rc<Type>> {
-        self.get_obj_of_attr(attr).map(|attr| attr.ty.clone())
+    pub fn get_type_of_attr(&self, attr: &str) -> Option<TypeRef> {
+        self.get_obj_of_attr(attr).map(|attr| attr.ty)
     }
 
     #[inline]
@@ -245,15 +295,15 @@ impl SchemaType {
         }
     }
 
-    pub fn key_ty(&self) -> Rc<Type> {
-        Rc::new(Type::STR)
+    pub fn key_ty(&self) -> TypeRef {
+        UnsafeRef::new(Type::STR)
     }
 
-    pub fn val_ty(&self) -> Rc<Type> {
+    pub fn val_ty(&self) -> TypeRef {
         if let Some(index_signature) = &self.index_signature {
-            index_signature.val_ty.clone()
+            index_signature.val_ty
         } else {
-            Rc::new(Type::ANY)
+            UnsafeRef::new(Type::ANY)
         }
     }
 }
@@ -268,7 +318,7 @@ pub struct SchemaAttr {
     /// For the schema attribute definition `name?: str`, the value of `default`
     /// is [None].
     pub default: Option<String>,
-    pub ty: Rc<Type>,
+    pub ty: TypeRef,
     pub pos: Position,
     pub doc: Option<String>,
     pub decorators: Vec<Decorator>,
@@ -277,8 +327,8 @@ pub struct SchemaAttr {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchemaIndexSignature {
     pub key_name: Option<String>,
-    pub key_ty: Rc<Type>,
-    pub val_ty: Rc<Type>,
+    pub key_ty: TypeRef,
+    pub val_ty: TypeRef,
     pub any_other: bool,
 }
 
@@ -358,8 +408,8 @@ impl NumberMultiplierType {
 pub struct FunctionType {
     pub doc: String,
     pub params: Vec<Parameter>,
-    pub self_ty: Option<Rc<Type>>,
-    pub return_ty: Rc<Type>,
+    pub self_ty: Option<TypeRef>,
+    pub return_ty: TypeRef,
     pub is_variadic: bool,
     pub kw_only_index: Option<usize>,
 }
@@ -368,6 +418,6 @@ pub struct FunctionType {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parameter {
     pub name: String,
-    pub ty: Rc<Type>,
+    pub ty: TypeRef,
     pub has_default: bool,
 }

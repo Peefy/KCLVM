@@ -1,13 +1,10 @@
-use std::rc::Rc;
-
 use super::{
-    node::TypeRef,
     scope::{ScopeKind, ScopeObject, ScopeObjectKind},
     Resolver,
 };
-use crate::ty::sup;
 use crate::ty::SchemaType;
-use crate::ty::{Type, TypeKind};
+use crate::ty::{sup, UnsafeRef};
+use crate::ty::{Type, TypeKind, TypeRef};
 use kclvm_ast::ast;
 use kclvm_ast::pos::GetPos;
 use kclvm_error::{diagnostic::Range, ErrorKind, Message, Position, Style};
@@ -33,7 +30,7 @@ impl<'ctx> Resolver<'ctx> {
     pub(crate) fn new_config_expr_context_item(
         &mut self,
         name: &str,
-        ty: Rc<Type>,
+        ty: TypeRef,
         start: Position,
         end: Position,
     ) -> ScopeObject {
@@ -83,7 +80,7 @@ impl<'ctx> Resolver<'ctx> {
                                 match schema_ty.get_obj_of_attr(key_name) {
                                     Some(attr_ty_obj) => Some(self.new_config_expr_context_item(
                                         key_name,
-                                        attr_ty_obj.ty.clone(),
+                                        attr_ty_obj.ty,
                                         attr_ty_obj.pos.clone(),
                                         attr_ty_obj.pos.clone(),
                                     )),
@@ -354,7 +351,7 @@ impl<'ctx> Resolver<'ctx> {
         &mut self,
         schema_ty: &SchemaType,
         attr: &str,
-    ) -> (bool, Rc<Type>) {
+    ) -> (bool, TypeRef) {
         let runtime_type = kclvm_runtime::schema_runtime_type(&schema_ty.name, &schema_ty.pkgpath);
         match self.ctx.schema_mapping.get(&runtime_type) {
             Some(schema_mapping_ty) => {
@@ -414,7 +411,7 @@ impl<'ctx> Resolver<'ctx> {
                             let key_ty = if self.ctx.local_vars.contains(name) {
                                 self.expr(key)
                             } else {
-                                Rc::new(Type::str_lit(name))
+                                UnsafeRef::new(Type::str_lit(name))
                             };
                             self.check_attr_ty(&key_ty, key.get_span_pos());
                             self.insert_object(

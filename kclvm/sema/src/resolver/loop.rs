@@ -1,7 +1,5 @@
-use std::rc::Rc;
-
 use crate::resolver::Resolver;
-use crate::ty::{sup, Type, TypeKind};
+use crate::ty::{sup, TypeKind, TypeRef};
 use kclvm_ast::ast;
 use kclvm_ast::pos::GetPos;
 use kclvm_error::diagnostic::Range;
@@ -13,7 +11,7 @@ impl<'ctx> Resolver<'ctx> {
         target_node: &'ctx ast::NodeRef<ast::Identifier>,
         first_var_name: Option<String>,
         second_var_name: Option<String>,
-        iter_ty: Rc<Type>,
+        iter_ty: TypeRef,
         iter_range: Range,
     ) {
         let types = match &iter_ty.kind {

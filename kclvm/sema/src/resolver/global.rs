@@ -5,7 +5,7 @@ use crate::info::is_private_field;
 use crate::resolver::Resolver;
 use crate::ty::{
     is_upper_bound, DecoratorTarget, FunctionType, Parameter, SchemaAttr, SchemaIndexSignature,
-    SchemaType, Type, TypeKind, RESERVED_TYPE_IDENTIFIERS,
+    SchemaType, Type, TypeKind, UnsafeRef, RESERVED_TYPE_IDENTIFIERS,
 };
 use indexmap::IndexMap;
 use kclvm_ast::ast;
@@ -80,7 +80,7 @@ impl<'ctx> Resolver<'ctx> {
                                 doc: parsed_doc.summary.clone(),
                                 params: vec![],
                                 self_ty: None,
-                                return_ty: Rc::new(Type::VOID),
+                                return_ty: UnsafeRef::new(Type::VOID),
                                 is_variadic: false,
                                 kw_only_index: None,
                             }),
@@ -93,7 +93,7 @@ impl<'ctx> Resolver<'ctx> {
                                 name: name.to_string(),
                                 start,
                                 end,
-                                ty: Rc::new(Type::schema(schema_ty.clone())),
+                                ty: UnsafeRef::new(Type::schema(schema_ty.clone())),
                                 kind: ScopeObjectKind::Definition,
                                 used: false,
                                 doc: Some(parsed_doc.summary.clone()),
@@ -138,7 +138,7 @@ impl<'ctx> Resolver<'ctx> {
                                     name: schema_ty.name.to_string(),
                                     start,
                                     end,
-                                    ty: Rc::new(Type::schema(schema_ty.clone())),
+                                    ty: UnsafeRef::new(Type::schema(schema_ty.clone())),
                                     kind: ScopeObjectKind::Definition,
                                     used: false,
                                     doc: Some(schema_ty.doc),
@@ -810,7 +810,7 @@ impl<'ctx> Resolver<'ctx> {
                 doc: parsed_doc.summary.clone(),
                 params,
                 self_ty: None,
-                return_ty: Rc::new(Type::ANY),
+                return_ty: UnsafeRef::new(Type::ANY),
                 is_variadic: false,
                 kw_only_index: None,
             }),
@@ -919,7 +919,7 @@ impl<'ctx> Resolver<'ctx> {
                 doc: rule_stmt.doc.clone(),
                 params,
                 self_ty: None,
-                return_ty: Rc::new(Type::ANY),
+                return_ty: UnsafeRef::new(Type::ANY),
                 is_variadic: false,
                 kw_only_index: None,
             }),

@@ -1,7 +1,7 @@
 use crate::plugin::PLUGIN_MODULE_PREFIX;
 use crate::resolver::scope::Module;
 use crate::resolver::Resolver;
-use crate::ty::ModuleKind;
+use crate::ty::{ModuleKind, UnsafeRef};
 use crate::{
     builtin::system_module::STANDARD_SYSTEM_MODULES,
     ty::{Type, TypeKind},
@@ -117,7 +117,7 @@ impl<'ctx> Resolver<'ctx> {
                                                 module_ty
                                                     .imported
                                                     .push(self.ctx.filename.to_string());
-                                                obj.ty = Rc::new(Type::module(
+                                                obj.ty = UnsafeRef::new(Type::module(
                                                     &module_ty.pkgpath,
                                                     &module_ty.imported,
                                                     module_ty.kind.clone(),
@@ -153,7 +153,7 @@ impl<'ctx> Resolver<'ctx> {
                                                 name: import_stmt.path.to_string(),
                                                 start,
                                                 end,
-                                                ty: Rc::new(ty),
+                                                ty: UnsafeRef::new(ty),
                                                 kind: ScopeObjectKind::Module(Module {
                                                     path: import_stmt.path.clone(),
                                                     rawpath: import_stmt.rawpath.clone(),

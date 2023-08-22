@@ -77,7 +77,7 @@ impl<'ctx> Resolver<'ctx> {
                         files.insert(module.filename.to_string());
                     }
                     for stmt in &module.body {
-                        self.stmt(&stmt);
+                        self.stmt(stmt);
                     }
                     if self.options.lint_check {
                         self.lint_check_module(module);

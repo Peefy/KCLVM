@@ -4,14 +4,14 @@ use crate::builtin::BUILTIN_FUNCTION_NAMES;
 use crate::pre_process::pre_process_program;
 use crate::resolver::resolve_program;
 use crate::resolver::scope::*;
-use crate::ty::{Type, TypeKind};
+use crate::ty::{Type, TypeKind, UnsafeRef};
 use kclvm_ast::ast;
 use kclvm_ast::pos::ContainsPos;
 use kclvm_error::*;
 use kclvm_parser::ParseSession;
 use kclvm_parser::{load_program, parse_program};
 use std::path::Path;
-use std::rc::Rc;
+
 use std::sync::Arc;
 
 #[test]
@@ -23,7 +23,7 @@ fn test_scope() {
         assert!(obj_ref.ty.is_func());
     }
     for name in BUILTIN_FUNCTION_NAMES {
-        scope.set_ty(name, Rc::new(Type::ANY));
+        scope.set_ty(name, UnsafeRef::new(Type::ANY));
     }
     for name in BUILTIN_FUNCTION_NAMES {
         let obj = scope.lookup(name).unwrap();
@@ -291,7 +291,7 @@ fn test_lint() {
                 },
             ),
             style: Style::Line,
-            message: format!("Importstmt should be placed at the top of the module"),
+            message: "Importstmt should be placed at the top of the module".to_string(),
             note: Some("Consider moving tihs statement to the top of the file".to_string()),
         }],
     );
@@ -311,7 +311,7 @@ fn test_lint() {
                 },
             ),
             style: Style::Line,
-            message: format!("Module 'a' is reimported multiple times"),
+            message: "Module 'a' is reimported multiple times".to_string(),
             note: Some("Consider removing this statement".to_string()),
         }],
     );
@@ -331,7 +331,7 @@ fn test_lint() {
                 },
             ),
             style: Style::Line,
-            message: format!("Module 'import_test.a' imported but unused"),
+            message: "Module 'import_test.a' imported but unused".to_string(),
             note: Some("Consider removing this statement".to_string()),
         }],
     );

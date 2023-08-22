@@ -1,8 +1,7 @@
 use crate::resolver::Resolver;
-use crate::ty::{Parameter, Type};
+use crate::ty::{Parameter, TypeRef};
 use indexmap::IndexSet;
 use kclvm_ast::ast;
-use std::rc::Rc;
 
 use kclvm_ast::pos::GetPos;
 
@@ -33,7 +32,7 @@ impl<'ctx> Resolver<'ctx> {
     ) {
         let func_name = self.get_func_name(func);
         let arg_types = self.exprs(args);
-        let mut kwarg_types: Vec<(String, Rc<Type>)> = vec![];
+        let mut kwarg_types: Vec<(String, TypeRef)> = vec![];
         let mut check_table: IndexSet<String> = IndexSet::default();
         for kw in kwargs {
             if !kw.node.arg.node.names.is_empty() {
@@ -85,7 +84,7 @@ impl<'ctx> Resolver<'ctx> {
                         kwargs[i].get_span_pos(),
                     );
                 }
-                let expected_types: Vec<Rc<Type>> = params
+                let expected_types: Vec<TypeRef> = params
                     .iter()
                     .filter(|p| p.name == *arg_name)
                     .map(|p| p.ty.clone())

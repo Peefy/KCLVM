@@ -3,7 +3,7 @@ use super::*;
 impl Type {
     /// Construct a union type
     #[inline]
-    pub fn union(types: &[Rc<Type>]) -> Type {
+    pub fn union(types: &[TypeRef]) -> Type {
         Type {
             kind: TypeKind::Union(types.to_owned()),
             flags: TypeFlags::UNION,
@@ -12,12 +12,12 @@ impl Type {
     }
     /// Construct a union type ref
     #[inline]
-    pub fn union_ref(types: &[Rc<Type>]) -> Rc<Type> {
-        Rc::new(Self::union(types))
+    pub fn union_ref(types: &[TypeRef]) -> TypeRef {
+        UnsafeRef::new(Self::union(types))
     }
     /// Construct a list type
     #[inline]
-    pub fn list(item_ty: Rc<Type>) -> Type {
+    pub fn list(item_ty: TypeRef) -> Type {
         Type {
             kind: TypeKind::List(item_ty),
             flags: TypeFlags::LIST,
@@ -26,12 +26,12 @@ impl Type {
     }
     /// Construct a list type ref
     #[inline]
-    pub fn list_ref(item_ty: Rc<Type>) -> Rc<Type> {
-        Rc::new(Self::list(item_ty))
+    pub fn list_ref(item_ty: TypeRef) -> TypeRef {
+        UnsafeRef::new(Self::list(item_ty))
     }
     /// Construct a dict type
     #[inline]
-    pub fn dict(key_ty: Rc<Type>, val_ty: Rc<Type>) -> Type {
+    pub fn dict(key_ty: TypeRef, val_ty: TypeRef) -> Type {
         Type {
             kind: TypeKind::Dict(key_ty, val_ty),
             flags: TypeFlags::DICT,
@@ -40,8 +40,8 @@ impl Type {
     }
     /// Construct a dict type ref
     #[inline]
-    pub fn dict_ref(key_ty: Rc<Type>, val_ty: Rc<Type>) -> Rc<Type> {
-        Rc::new(Self::dict(key_ty, val_ty))
+    pub fn dict_ref(key_ty: TypeRef, val_ty: TypeRef) -> TypeRef {
+        UnsafeRef::new(Self::dict(key_ty, val_ty))
     }
     /// Construct a bool literal type.
     #[inline]
@@ -118,8 +118,8 @@ impl Type {
     /// Construct a function type.
     #[inline]
     pub fn function(
-        self_ty: Option<Rc<Type>>,
-        return_ty: Rc<Type>,
+        self_ty: Option<TypeRef>,
+        return_ty: TypeRef,
         params: &[Parameter],
         doc: &str,
         is_variadic: bool,
@@ -159,19 +159,22 @@ impl Type {
         }
     }
     /// Construct a iterable type
-    pub fn iterable() -> Rc<Type> {
-        Rc::new(Type::union(&[
-            Rc::new(Type::STR),
-            Rc::new(Type::dict(Rc::new(Type::ANY), Rc::new(Type::ANY))),
-            Rc::new(Type::list(Rc::new(Type::ANY))),
+    pub fn iterable() -> TypeRef {
+        UnsafeRef::new(Type::union(&[
+            UnsafeRef::new(Type::STR),
+            UnsafeRef::new(Type::dict(
+                UnsafeRef::new(Type::ANY),
+                UnsafeRef::new(Type::ANY),
+            )),
+            UnsafeRef::new(Type::list(UnsafeRef::new(Type::ANY))),
         ]))
     }
     /// Construct a number type
-    pub fn number() -> Rc<Type> {
-        Rc::new(Type::union(&[
-            Rc::new(Type::INT),
-            Rc::new(Type::FLOAT),
-            Rc::new(Type::STR),
+    pub fn number() -> TypeRef {
+        UnsafeRef::new(Type::union(&[
+            UnsafeRef::new(Type::INT),
+            UnsafeRef::new(Type::FLOAT),
+            UnsafeRef::new(Type::STR),
         ]))
     }
     /// Whether is a any type.

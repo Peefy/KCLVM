@@ -1,9 +1,7 @@
-use std::rc::Rc;
-
 use crate::builtin::system_module::{get_system_module_members, UNITS, UNITS_NUMBER_MULTIPLIER};
 use crate::builtin::STRING_MEMBER_FUNCTIONS;
 use crate::resolver::Resolver;
-use crate::ty::{ModuleKind, Type, TypeKind};
+use crate::ty::{ModuleKind, Type, TypeKind, TypeRef, UnsafeRef};
 use kclvm_error::diagnostic::Range;
 use kclvm_error::*;
 
@@ -27,7 +25,7 @@ impl<'ctx> Resolver<'ctx> {
         }
     }
 
-    pub fn load_attr(&mut self, obj: Rc<Type>, attr: &str, range: Range) -> ResolvedResult {
+    pub fn load_attr(&mut self, obj: TypeRef, attr: &str, range: Range) -> ResolvedResult {
         let (result, return_ty) = match &obj.kind {
             TypeKind::Any => (true, self.any_ty()),
             TypeKind::None
@@ -43,10 +41,10 @@ impl<'ctx> Resolver<'ctx> {
             | TypeKind::Named(_)
             | TypeKind::Void => (false, self.any_ty()),
             TypeKind::Str | TypeKind::StrLit(_) => match STRING_MEMBER_FUNCTIONS.get(attr) {
-                Some(ty) => (true, Rc::new(ty.clone())),
+                Some(ty) => (true, UnsafeRef::new(ty.clone())),
                 None => (false, self.any_ty()),
             },
-            TypeKind::Dict(_, val_ty) => (true, Rc::new(val_ty.as_ref().clone())),
+            TypeKind::Dict(_, val_ty) => (true, UnsafeRef::new(val_ty.as_ref().clone())),
             // union type load attr based the type guard. e.g, a: str|int; if a is str: xxx; if a is int: xxx;
             // return sup([self.load_attr_type(t, attr, filename, line, column) for t in obj.types])
             TypeKind::Union(_) => (true, self.any_ty()),
@@ -57,7 +55,7 @@ impl<'ctx> Resolver<'ctx> {
                 } else if schema_ty.is_member_functions(attr) {
                     (
                         true,
-                        Rc::new(Type::function(
+                        UnsafeRef::new(Type::function(
                             Some(obj.clone()),
                             Type::list_ref(self.any_ty()),
                             &[],
@@ -87,7 +85,7 @@ impl<'ctx> Resolver<'ctx> {
                     },
                     ModuleKind::System => {
                         if module_ty.pkgpath == UNITS && attr == UNITS_NUMBER_MULTIPLIER {
-                            (true, Rc::new(Type::number_multiplier_non_lit_ty()))
+                            (true, UnsafeRef::new(Type::number_multiplier_non_lit_ty()))
                         } else {
                             let members = get_system_module_members(&module_ty.pkgpath);
                             (members.contains(&attr), self.any_ty())

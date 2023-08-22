@@ -97,7 +97,7 @@ impl<'ctx> MutSelfMutWalker<'ctx> for TypeAliasTransformer {
                 // schema Person:
                 //    name: Name
                 // ```
-                if self.pkgpath != &pkgpath[1..] {
+                if self.pkgpath != pkgpath[1..] {
                     identifier.pkgpath = pkgpath;
                     let mut first_node = identifier.names[0].clone();
                     first_node.node = splits[1].to_string();
@@ -123,8 +123,8 @@ impl<'ctx> MutSelfMutWalker<'ctx> for TypeAliasTransformer {
 }
 
 /// Replace type alias.
-fn fix_type_alias_identifier<'ctx>(
-    module: &'ctx mut ast::Module,
+fn fix_type_alias_identifier(
+    module: &mut ast::Module,
     type_alias_mapping: IndexMap<String, String>,
 ) {
     let mut type_alias_transformer = TypeAliasTransformer {

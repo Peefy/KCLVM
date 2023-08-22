@@ -3,62 +3,65 @@ use super::*;
 #[test]
 fn test_sup() {
     let cases = vec![
-        (vec![], Rc::new(Type::ANY)),
-        (vec![Rc::new(Type::ANY)], Rc::new(Type::ANY)),
-        (vec![Rc::new(Type::STR)], Rc::new(Type::STR)),
+        (vec![], UnsafeRef::new(Type::ANY)),
+        (vec![UnsafeRef::new(Type::ANY)], UnsafeRef::new(Type::ANY)),
+        (vec![UnsafeRef::new(Type::STR)], UnsafeRef::new(Type::STR)),
         (
-            vec![Rc::new(Type::STR), Rc::new(Type::INT)],
-            Type::union_ref(&[Rc::new(Type::STR), Rc::new(Type::INT)]),
-        ),
-        (
-            vec![Rc::new(Type::BOOL), Rc::new(Type::bool_lit(true))],
-            Rc::new(Type::BOOL),
+            vec![UnsafeRef::new(Type::STR), UnsafeRef::new(Type::INT)],
+            Type::union_ref(&[UnsafeRef::new(Type::STR), UnsafeRef::new(Type::INT)]),
         ),
         (
             vec![
-                Rc::new(Type::str_lit("Blue")),
-                Rc::new(Type::str_lit("Yellow")),
-                Rc::new(Type::str_lit("Red")),
+                UnsafeRef::new(Type::BOOL),
+                UnsafeRef::new(Type::bool_lit(true)),
+            ],
+            UnsafeRef::new(Type::BOOL),
+        ),
+        (
+            vec![
+                UnsafeRef::new(Type::str_lit("Blue")),
+                UnsafeRef::new(Type::str_lit("Yellow")),
+                UnsafeRef::new(Type::str_lit("Red")),
             ],
             Type::union_ref(&[
-                Rc::new(Type::str_lit("Blue")),
-                Rc::new(Type::str_lit("Yellow")),
-                Rc::new(Type::str_lit("Red")),
+                UnsafeRef::new(Type::str_lit("Blue")),
+                UnsafeRef::new(Type::str_lit("Yellow")),
+                UnsafeRef::new(Type::str_lit("Red")),
             ]),
         ),
         (
             vec![
                 Type::list_ref(Type::union_ref(&[
-                    Rc::new(Type::int_lit(1)),
-                    Rc::new(Type::int_lit(2)),
+                    UnsafeRef::new(Type::int_lit(1)),
+                    UnsafeRef::new(Type::int_lit(2)),
                 ])),
                 Type::list_ref(Type::union_ref(&[
-                    Rc::new(Type::int_lit(3)),
-                    Rc::new(Type::int_lit(4)),
+                    UnsafeRef::new(Type::int_lit(3)),
+                    UnsafeRef::new(Type::int_lit(4)),
                 ])),
             ],
             Type::union_ref(&[
                 Type::list_ref(Type::union_ref(&[
-                    Rc::new(Type::int_lit(1)),
-                    Rc::new(Type::int_lit(2)),
+                    UnsafeRef::new(Type::int_lit(1)),
+                    UnsafeRef::new(Type::int_lit(2)),
                 ])),
                 Type::list_ref(Type::union_ref(&[
-                    Rc::new(Type::int_lit(3)),
-                    Rc::new(Type::int_lit(4)),
+                    UnsafeRef::new(Type::int_lit(3)),
+                    UnsafeRef::new(Type::int_lit(4)),
                 ])),
             ]),
         ),
         (
             vec![
                 Type::union_ref(&[
-                    Rc::new(Type::STR),
-                    Type::dict_ref(Rc::new(Type::STR), Rc::new(Type::STR)),
+                    UnsafeRef::new(Type::STR),
+                    Type::dict_ref(UnsafeRef::new(Type::STR), UnsafeRef::new(Type::STR)),
                 ]),
-                Type::dict_ref(Rc::new(Type::ANY), Rc::new(Type::ANY)),
+                Type::dict_ref(UnsafeRef::new(Type::ANY), UnsafeRef::new(Type::ANY)),
             ],
             Type::union_ref(&[
-                Rc::new(Type::STR),
-                Type::dict_ref(Rc::new(Type::ANY), Rc::new(Type::ANY)),
+                UnsafeRef::new(Type::STR),
+                Type::dict_ref(UnsafeRef::new(Type::ANY), UnsafeRef::new(Type::ANY)),
             ]),
         ),
     ];
@@ -70,40 +73,40 @@ fn test_sup() {
 
 #[test]
 fn test_type_walker() {
-    fn walk_fn(ty: &Type) -> Rc<Type> {
+    fn walk_fn(ty: &Type) -> TypeRef {
         if ty.is_int() {
-            Rc::new(Type::STR)
+            UnsafeRef::new(Type::STR)
         } else {
-            Rc::new(ty.clone())
+            UnsafeRef::new(ty.clone())
         }
     }
     let cases = [
-        (Rc::new(Type::ANY), Rc::new(Type::ANY)),
-        (Rc::new(Type::INT), Rc::new(Type::STR)),
-        (Rc::new(Type::STR), Rc::new(Type::STR)),
+        (UnsafeRef::new(Type::ANY), UnsafeRef::new(Type::ANY)),
+        (UnsafeRef::new(Type::INT), UnsafeRef::new(Type::STR)),
+        (UnsafeRef::new(Type::STR), UnsafeRef::new(Type::STR)),
         (
-            Type::list_ref(Rc::new(Type::INT)),
-            Type::list_ref(Rc::new(Type::STR)),
+            Type::list_ref(UnsafeRef::new(Type::INT)),
+            Type::list_ref(UnsafeRef::new(Type::STR)),
         ),
         (
-            Type::union_ref(&[Rc::new(Type::INT), Rc::new(Type::STR)]),
-            Type::union_ref(&[Rc::new(Type::STR), Rc::new(Type::STR)]),
+            Type::union_ref(&[UnsafeRef::new(Type::INT), UnsafeRef::new(Type::STR)]),
+            Type::union_ref(&[UnsafeRef::new(Type::STR), UnsafeRef::new(Type::STR)]),
         ),
         (
             Type::union_ref(&[
-                Rc::new(Type::INT),
-                Rc::new(Type::STR),
-                Type::union_ref(&[Rc::new(Type::INT), Rc::new(Type::STR)]),
+                UnsafeRef::new(Type::INT),
+                UnsafeRef::new(Type::STR),
+                Type::union_ref(&[UnsafeRef::new(Type::INT), UnsafeRef::new(Type::STR)]),
             ]),
             Type::union_ref(&[
-                Rc::new(Type::STR),
-                Rc::new(Type::STR),
-                Type::union_ref(&[Rc::new(Type::STR), Rc::new(Type::STR)]),
+                UnsafeRef::new(Type::STR),
+                UnsafeRef::new(Type::STR),
+                Type::union_ref(&[UnsafeRef::new(Type::STR), UnsafeRef::new(Type::STR)]),
             ]),
         ),
         (
-            Type::dict_ref(Rc::new(Type::INT), Rc::new(Type::INT)),
-            Type::dict_ref(Rc::new(Type::STR), Rc::new(Type::STR)),
+            Type::dict_ref(UnsafeRef::new(Type::INT), UnsafeRef::new(Type::INT)),
+            Type::dict_ref(UnsafeRef::new(Type::STR), UnsafeRef::new(Type::STR)),
         ),
     ];
     for (ty, expected) in cases {

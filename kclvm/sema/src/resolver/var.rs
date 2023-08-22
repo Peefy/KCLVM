@@ -29,7 +29,7 @@ impl<'ctx> Resolver<'ctx> {
                         return scope_ty.map_or(self.any_ty(), |ty| ty);
                     } else if let Some(ref ty) = ty {
                         if !ty.is_any() {
-                            return ty.clone();
+                            return *ty;
                         }
                     }
                     scope_ty.map_or(self.any_ty(), |ty| ty)

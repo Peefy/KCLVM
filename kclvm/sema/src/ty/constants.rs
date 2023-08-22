@@ -1,6 +1,4 @@
-use std::rc::Rc;
-
-use super::{Type, TypeFlags, TypeKind};
+use super::{Type, TypeFlags, TypeKind, UnsafeRef};
 
 use indexmap::IndexMap;
 use once_cell::sync::Lazy;
@@ -57,24 +55,24 @@ pub const TYPES_MAPPING: Lazy<IndexMap<String, Type>> = Lazy::new(|| {
     mapping.insert(STR_TYPE_STR.to_string(), Type::STR);
     mapping.insert(BOOL_TYPE_STR.to_string(), Type::BOOL);
     mapping.insert(ANY_TYPE_STR.to_string(), Type::ANY);
-    mapping.insert("[]".to_string(), Type::list(Rc::new(Type::ANY)));
-    mapping.insert("[any]".to_string(), Type::list(Rc::new(Type::ANY)));
-    mapping.insert("[str]".to_string(), Type::list(Rc::new(Type::STR)));
+    mapping.insert("[]".to_string(), Type::list(UnsafeRef::new(Type::ANY)));
+    mapping.insert("[any]".to_string(), Type::list(UnsafeRef::new(Type::ANY)));
+    mapping.insert("[str]".to_string(), Type::list(UnsafeRef::new(Type::STR)));
     mapping.insert(
         "{:}".to_string(),
-        Type::dict(Rc::new(Type::ANY), Rc::new(Type::ANY)),
+        Type::dict(UnsafeRef::new(Type::ANY), UnsafeRef::new(Type::ANY)),
     );
     mapping.insert(
         "{str:}".to_string(),
-        Type::dict(Rc::new(Type::STR), Rc::new(Type::ANY)),
+        Type::dict(UnsafeRef::new(Type::STR), UnsafeRef::new(Type::ANY)),
     );
     mapping.insert(
         "{str:any}".to_string(),
-        Type::dict(Rc::new(Type::STR), Rc::new(Type::ANY)),
+        Type::dict(UnsafeRef::new(Type::STR), UnsafeRef::new(Type::ANY)),
     );
     mapping.insert(
         "{str:str}".to_string(),
-        Type::dict(Rc::new(Type::STR), Rc::new(Type::STR)),
+        Type::dict(UnsafeRef::new(Type::STR), UnsafeRef::new(Type::STR)),
     );
     mapping
 });

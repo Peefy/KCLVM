@@ -3,41 +3,41 @@ use super::*;
 impl Type {
     /// Downcast ty into the list type.
     #[inline]
-    pub fn list_item_ty(&self) -> Rc<Type> {
+    pub fn list_item_ty(&self) -> TypeRef {
         match &self.kind {
-            TypeKind::List(item_ty) => item_ty.clone(),
+            TypeKind::List(item_ty) => *item_ty,
             _ => bug!("invalid list type {}", self.ty_str()),
         }
     }
     /// Downcast ty into the dict entry type.
     #[inline]
-    pub fn dict_entry_ty(&self) -> (Rc<Type>, Rc<Type>) {
+    pub fn dict_entry_ty(&self) -> (TypeRef, TypeRef) {
         match &self.kind {
-            TypeKind::Dict(key_ty, val_ty) => (key_ty.clone(), val_ty.clone()),
+            TypeKind::Dict(key_ty, val_ty) => (*key_ty, *val_ty),
             _ => bug!("invalid dict type {}", self.ty_str()),
         }
     }
     /// Downcast ty into the config key type.
     #[inline]
-    pub fn config_key_ty(&self) -> Rc<Type> {
+    pub fn config_key_ty(&self) -> TypeRef {
         match &self.kind {
-            TypeKind::Dict(key_ty, _) => key_ty.clone(),
+            TypeKind::Dict(key_ty, _) => *key_ty,
             TypeKind::Schema(schema_ty) => schema_ty.key_ty(),
             _ => bug!("invalid config type {}", self.ty_str()),
         }
     }
     /// Downcast ty into the config value type.
     #[inline]
-    pub fn config_val_ty(&self) -> Rc<Type> {
+    pub fn config_val_ty(&self) -> TypeRef {
         match &self.kind {
-            TypeKind::Dict(_, val_ty) => val_ty.clone(),
+            TypeKind::Dict(_, val_ty) => *val_ty,
             TypeKind::Schema(schema_ty) => schema_ty.val_ty(),
             _ => bug!("invalid config type {}", self.ty_str()),
         }
     }
     /// Get types from the union type.
     #[inline]
-    pub fn union_types(&self) -> Vec<Rc<Type>> {
+    pub fn union_types(&self) -> Vec<TypeRef> {
         match &self.kind {
             TypeKind::Union(types) => types.clone(),
             _ => bug!("invalid {} into union type", self.ty_str()),
@@ -124,24 +124,30 @@ impl From<ast::Type> for Type {
                 list_ty
                     .inner_type
                     .as_ref()
-                    .map_or(Rc::new(Type::ANY), |ty| Rc::new(ty.node.clone().into())),
+                    .map_or(UnsafeRef::new(Type::ANY), |ty| {
+                        UnsafeRef::new(ty.node.clone().into())
+                    }),
             ),
             ast::Type::Dict(dict_ty) => Type::dict(
                 dict_ty
                     .key_type
                     .as_ref()
-                    .map_or(Rc::new(Type::ANY), |ty| Rc::new(ty.node.clone().into())),
+                    .map_or(UnsafeRef::new(Type::ANY), |ty| {
+                        UnsafeRef::new(ty.node.clone().into())
+                    }),
                 dict_ty
                     .value_type
                     .as_ref()
-                    .map_or(Rc::new(Type::ANY), |ty| Rc::new(ty.node.clone().into())),
+                    .map_or(UnsafeRef::new(Type::ANY), |ty| {
+                        UnsafeRef::new(ty.node.clone().into())
+                    }),
             ),
             ast::Type::Union(union_ty) => Type::union(
                 &union_ty
                     .type_elements
                     .iter()
-                    .map(|ty| Rc::new(ty.node.clone().into()))
-                    .collect::<Vec<Rc<Type>>>(),
+                    .map(|ty| UnsafeRef::new(ty.node.clone().into()))
+                    .collect::<Vec<TypeRef>>(),
             ),
             ast::Type::Literal(literal_ty) => match literal_ty {
                 ast::LiteralType::Bool(v) => Type::bool_lit(v),

@@ -1,24 +1,20 @@
-use std::{collections::HashSet, rc::Rc};
+use std::collections::HashSet;
 
-use super::{SchemaType, Type, TypeKind};
+use super::{SchemaType, Type, TypeKind, TypeRef, UnsafeRef};
 
 /// The type can be assigned to the expected type.
 ///
 /// For security and performance considerations, dynamic dispatch of
 /// types is not supported at this stage.
-pub fn subsume(ty_lhs: Rc<Type>, ty_rhs: Rc<Type>, check_left_any: bool) -> bool {
+pub fn subsume(ty_lhs: TypeRef, ty_rhs: TypeRef, check_left_any: bool) -> bool {
     if (check_left_any && ty_lhs.is_any()) || (ty_rhs.is_any() || ty_lhs.is_none()) {
         true
     } else if ty_lhs.is_union() {
         let types = ty_lhs.union_types();
-        types
-            .iter()
-            .all(|ty| subsume(ty.clone(), ty_rhs.clone(), false))
+        types.iter().all(|ty| subsume(*ty, ty_rhs, false))
     } else if ty_rhs.is_union() {
         let types = ty_rhs.union_types();
-        types
-            .iter()
-            .any(|ty| subsume(ty_lhs.clone(), ty.clone(), false))
+        types.iter().any(|ty| subsume(ty_lhs, *ty, false))
     } else if ty_lhs.is_schema() {
         match &ty_rhs.kind {
             TypeKind::Schema(ty_rhs_schema) => {
@@ -71,7 +67,7 @@ pub fn subsume(ty_lhs: Rc<Type>, ty_rhs: Rc<Type>, check_left_any: bool) -> bool
 
 /// Are the two types exactly equal.
 #[inline]
-pub fn equal(ty_lhs: Rc<Type>, ty_rhs: Rc<Type>) -> bool {
+pub fn equal(ty_lhs: TypeRef, ty_rhs: TypeRef) -> bool {
     ty_lhs.kind == ty_rhs.kind
 }
 
@@ -89,7 +85,7 @@ pub fn is_sub_schema_of(schema_ty_lhs: &SchemaType, schema_ty_rhs: &SchemaType) 
 
 /// The type can be assigned to the expected type.
 #[inline]
-pub fn assignable_to(ty: Rc<Type>, expected_ty: Rc<Type>) -> bool {
+pub fn assignable_to(ty: TypeRef, expected_ty: TypeRef) -> bool {
     if !ty.is_assignable_type() {
         return false;
     }
@@ -98,26 +94,26 @@ pub fn assignable_to(ty: Rc<Type>, expected_ty: Rc<Type>) -> bool {
 
 /// Whether `lhs_ty` is the upper bound of the `rhs_ty`
 #[inline]
-pub fn is_upper_bound(lhs_ty: Rc<Type>, rhs_ty: Rc<Type>) -> bool {
+pub fn is_upper_bound(lhs_ty: TypeRef, rhs_ty: TypeRef) -> bool {
     subsume(rhs_ty, lhs_ty, false)
 }
 
 /// Whether the type list contains the `any` type.
 #[inline]
-pub fn has_any_type(types: &[Rc<Type>]) -> bool {
+pub fn has_any_type(types: &[TypeRef]) -> bool {
     types.iter().any(|ty| ty.is_any())
 }
 
 /// The sup function returns the minimum supremum of all types in an array of types.
 #[inline]
-pub fn sup(types: &[Rc<Type>]) -> Rc<Type> {
+pub fn sup(types: &[TypeRef]) -> TypeRef {
     r#typeof(types, true)
 }
 
 /// Typeof types
-pub fn r#typeof(types: &[Rc<Type>], should_remove_sub_types: bool) -> Rc<Type> {
+pub fn r#typeof(types: &[TypeRef], should_remove_sub_types: bool) -> TypeRef {
     // 1. Initialize an ordered set to store the type array
-    let mut type_set: Vec<Rc<Type>> = vec![];
+    let mut type_set: Vec<TypeRef> = vec![];
     // 2. Add the type array to the ordered set for sorting by the type id and de-duplication.
     add_types_to_type_set(&mut type_set, types);
     // 3. Remove sub types according to partial order relation rules e.g. sub schema types.
@@ -125,37 +121,34 @@ pub fn r#typeof(types: &[Rc<Type>], should_remove_sub_types: bool) -> Rc<Type> {
         let mut remove_index_set = HashSet::new();
         for (i, source) in type_set.iter().enumerate() {
             for (j, target) in type_set.iter().enumerate() {
-                if i != j && subsume(source.clone(), target.clone(), false) {
+                if i != j && subsume(*source, *target, false) {
                     remove_index_set.insert(i);
                 }
             }
         }
-        let types: Vec<(usize, &Rc<Type>)> = type_set
+        let types: Vec<(usize, &TypeRef)> = type_set
             .iter()
             .enumerate()
             .filter(|(i, _)| !remove_index_set.contains(i))
             .collect();
-        type_set = types
-            .iter()
-            .map(|(_, ty)| <&Rc<Type>>::clone(ty).clone())
-            .collect();
+        type_set = types.iter().map(|(_, ty)| *<&TypeRef>::clone(ty)).collect();
     }
     if type_set.is_empty() {
-        Rc::new(Type::ANY)
+        UnsafeRef::new(Type::ANY)
     } else if type_set.len() == 1 {
-        type_set[0].clone()
+        type_set[0]
     } else {
-        Rc::new(Type::union(&type_set))
+        Type::union_ref(&type_set)
     }
 }
 
-fn add_types_to_type_set(type_set: &mut Vec<Rc<Type>>, types: &[Rc<Type>]) {
+fn add_types_to_type_set(type_set: &mut Vec<TypeRef>, types: &[TypeRef]) {
     for ty in types {
-        add_type_to_type_set(type_set, ty.clone());
+        add_type_to_type_set(type_set, *ty);
     }
 }
 
-fn add_type_to_type_set(type_set: &mut Vec<Rc<Type>>, ty: Rc<Type>) {
+fn add_type_to_type_set(type_set: &mut Vec<TypeRef>, ty: TypeRef) {
     match &ty.kind {
         TypeKind::Union(types) => {
             add_types_to_type_set(type_set, types);
@@ -163,7 +156,7 @@ fn add_type_to_type_set(type_set: &mut Vec<Rc<Type>>, ty: Rc<Type>) {
         _ => {
             // Remove the bottom type.
             if !ty.is_void() && !type_set.contains(&ty) {
-                type_set.push(ty.clone())
+                type_set.push(ty)
             }
         }
     }
