@@ -25,22 +25,22 @@ kclvm_source_dir="$topdir/internal"
 set -x
 
 # Copy KCLVM.
-cp "$topdir/internal/scripts/cli/kcl" $kclvm_install_dir/bin/
-cp "$topdir/internal/scripts/cli/kclvm" $kclvm_install_dir/bin/
-cp "$topdir/internal/scripts/cli/kcl-plugin" $kclvm_install_dir/bin/
-cp "$topdir/internal/scripts/cli/kcl-doc" $kclvm_install_dir/bin/
-cp "$topdir/internal/scripts/cli/kcl-test" $kclvm_install_dir/bin/
-cp "$topdir/internal/scripts/cli/kcl-lint" $kclvm_install_dir/bin/
-cp "$topdir/internal/scripts/cli/kcl-fmt" $kclvm_install_dir/bin/
-cp "$topdir/internal/scripts/cli/kcl-vet" $kclvm_install_dir/bin/
-chmod +x $kclvm_install_dir/bin/kcl
-chmod +x $kclvm_install_dir/bin/kclvm
-chmod +x $kclvm_install_dir/bin/kcl-plugin
-chmod +x $kclvm_install_dir/bin/kcl-doc
-chmod +x $kclvm_install_dir/bin/kcl-test
-chmod +x $kclvm_install_dir/bin/kcl-lint
-chmod +x $kclvm_install_dir/bin/kcl-fmt
-chmod +x $kclvm_install_dir/bin/kcl-vet
+# cp "$topdir/internal/scripts/cli/kcl" $kclvm_install_dir/bin/
+# cp "$topdir/internal/scripts/cli/kclvm" $kclvm_install_dir/bin/
+# cp "$topdir/internal/scripts/cli/kcl-plugin" $kclvm_install_dir/bin/
+# cp "$topdir/internal/scripts/cli/kcl-doc" $kclvm_install_dir/bin/
+# cp "$topdir/internal/scripts/cli/kcl-test" $kclvm_install_dir/bin/
+# cp "$topdir/internal/scripts/cli/kcl-lint" $kclvm_install_dir/bin/
+# cp "$topdir/internal/scripts/cli/kcl-fmt" $kclvm_install_dir/bin/
+# cp "$topdir/internal/scripts/cli/kcl-vet" $kclvm_install_dir/bin/
+# chmod +x $kclvm_install_dir/bin/kcl
+# chmod +x $kclvm_install_dir/bin/kclvm
+# chmod +x $kclvm_install_dir/bin/kcl-plugin
+# chmod +x $kclvm_install_dir/bin/kcl-doc
+# chmod +x $kclvm_install_dir/bin/kcl-test
+# chmod +x $kclvm_install_dir/bin/kcl-lint
+# chmod +x $kclvm_install_dir/bin/kcl-fmt
+# chmod +x $kclvm_install_dir/bin/kcl-vet
 
 set +x
 

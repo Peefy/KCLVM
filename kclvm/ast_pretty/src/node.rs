@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 
+use kclvm_error::bug;
 use kclvm_ast::{
     ast::{self, CallExpr},
     token::{DelimToken, TokenKind},
     walker::MutSelfTypedResultWalker,
 };
-use kclvm_error::bug;
 
 use super::{Indentation, Printer};
 
@@ -38,6 +38,10 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
     fn walk_module(&mut self, module: &'ctx ast::Module) -> Self::Result {
         for comment in &module.comments {
             self.comments.push_back(comment.clone());
+        }
+        if !module.doc.is_empty() {
+            self.write(&module.doc);
+            self.write_newline();
         }
         self.stmts(&module.body);
     }
@@ -442,7 +446,15 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
             .iter()
             .map(|e| e.line)
             .collect::<HashSet<u64>>();
-        let mut in_one_line = line_set.len() <= 1;
+        // There are comments in the configuration block.
+        let has_comment = !list_expr.elts.is_empty()
+            && list_expr
+                .elts
+                .iter()
+                .map(|e| self.has_comments_on_node(e))
+                .all(|r| r);
+        // When there are comments in the configuration block, print them as multiline configurations.
+        let mut in_one_line = line_set.len() <= 1 && !has_comment;
         if let Some(elt) = list_expr.elts.first() {
             if let ast::Expr::ListIfItem(_) = &elt.node {
                 in_one_line = false;
@@ -527,6 +539,7 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
         }
         self.write(dict_comp.entry.operation.symbol());
         self.write_space();
+        self.expr(&dict_comp.entry.value);
         for gen in &dict_comp.generators {
             self.walk_comp_clause(&gen.node);
         }
@@ -596,10 +609,24 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
 
     fn walk_config_expr(&mut self, config_expr: &'ctx ast::ConfigExpr) -> Self::Result {
         let line_set: HashSet<u64> = config_expr.items.iter().map(|item| item.line).collect();
-        let mut in_one_line = line_set.len() <= 1;
-        if let Some(item) = config_expr.items.first() {
-            if let ast::Expr::ConfigIfEntry(_) = &item.node.value.node {
-                in_one_line = false;
+        // There are comments in the configuration block.
+        let has_comment = !config_expr.items.is_empty()
+            && config_expr
+                .items
+                .iter()
+                .map(|item| self.has_comments_on_node(item))
+                .all(|r| r);
+        // When there are comments in the configuration block, print them as multiline configurations.
+        let mut in_one_line = line_set.len() <= 1 && !has_comment;
+        // When there are complex configuration blocks in the configuration block, print them as multiline configurations.
+        if config_expr.items.len() == 1 && in_one_line {
+            if let Some(item) = config_expr.items.first() {
+                if matches!(
+                    &item.node.value.node,
+                    ast::Expr::ConfigIfEntry(_) | ast::Expr::Config(_) | ast::Expr::Schema(_)
+                ) {
+                    in_one_line = false;
+                }
             }
         }
         self.write_token(TokenKind::OpenDelim(DelimToken::Brace));
@@ -649,7 +676,7 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
         }
         self.write_space();
         self.write_token(TokenKind::OpenDelim(DelimToken::Brace));
-        self.write_newline();
+        self.write_newline_without_fill();
         self.write_indentation(Indentation::Indent);
 
         // lambda body
@@ -708,9 +735,13 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
     }
 
     fn walk_number_lit(&mut self, number_lit: &'ctx ast::NumberLit) -> Self::Result {
-        match number_lit.value {
+        match &number_lit.value {
             ast::NumberLitValue::Int(int_val) => self.write(&int_val.to_string()),
             ast::NumberLitValue::Float(float_val) => self.write(&float_val.to_string()),
+        }
+        // Number suffix e.g., 1Gi
+        if let Some(binary_suffix) = &number_lit.binary_suffix {
+            self.write(&binary_suffix.value())
         }
     }
 
@@ -817,12 +848,12 @@ impl<'p> Printer<'p> {
                 let names = &identifier.names;
 
                 let re = fancy_regex::Regex::new(IDENTIFIER_REGEX).unwrap();
-                let need_right_brace = !names.iter().all(|n| re.is_match(n).unwrap_or(false));
+                let need_right_brace = !names.iter().all(|n| re.is_match(&n).unwrap_or(false));
                 let count = if need_right_brace {
                     self.write(
                         &names
                             .iter()
-                            .map(|n| n.replace('\"', "\\\""))
+                            .map(|n| format!("{n:?}"))
                             .collect::<Vec<String>>()
                             .join(": {"),
                     );
