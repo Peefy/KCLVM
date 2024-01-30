@@ -3,6 +3,13 @@ name = "kclvm-runtime"
 version = "0.7.6"
 edition = "2021"
 
+[lib]
+crate-type = [
+    "cdylib",
+]
+path = "src/lib.rs"
+name = "kcl_runtime"
+
 [dependencies]
 kclvm_runtime_internal_macros = { path = "./internal_macros" }
 serde_json =  {package = "serde_json", version = "= 1.0.86"}
