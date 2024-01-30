@@ -3,10 +3,7 @@ on: ["push", "pull_request"]
 jobs:
   build-and-test:
     # Ref: https://github.com/actions/runner-images/tree/main/images/macos
-    strategy:
-      matrix:
-        os: [macos-12-xlarge]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-13-xlarge
     steps:
       - name: Git checkout
         uses: actions/checkout@v2
