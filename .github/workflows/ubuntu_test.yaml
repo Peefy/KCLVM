@@ -3,7 +3,7 @@ on: ["push", "pull_request"]
 jobs:
   build-and-test:
     # Ref: https://github.com/actions/runner-images/tree/main/images/linux
-    name: Test
+    name: Test on amd64
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
@@ -67,19 +67,19 @@ jobs:
           path: _build/dist/ubuntu/kclvm
 
   build-and-test-arm64:
-    name: Test
+    name: Test on arm64
     runs-on: ubuntu-latest
     steps:
       # QEMU enables you run arm64 image on x86 machines
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
         with:
-          platforms: linux/arm64
+          platforms: linux/amd64,linux/arm64/v8
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
       - name: Run custom ARM64 Docker image
         run: |
-          docker run --rm \
+          docker run --rm --platform linux/arm64/v8 \
             -v ${{ github.workspace }}:/workspace -w /workspace \
             kcllang/kcl-builder-arm64 \
             make && make release
