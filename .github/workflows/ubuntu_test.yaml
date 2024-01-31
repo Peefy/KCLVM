@@ -65,3 +65,25 @@ jobs:
         with:
           name: kcl-linux-amd64
           path: _build/dist/ubuntu/kclvm
+
+  build-and-test-arm64:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      # QEMU enables you run arm64 image on x86 machines
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+        with:
+          platforms: linux/arm64
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      - name: Run custom ARM64 Docker image
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace -w /workspace \
+            kcllang/kcl-builder-arm64 \
+            make && make release
+      - uses: actions/upload-artifact@v3
+        with:
+          name: kcl-linux-arm64
+          path: _build/dist/ubuntu/kclvm
