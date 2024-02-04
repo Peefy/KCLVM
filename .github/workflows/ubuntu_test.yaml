@@ -70,6 +70,10 @@ jobs:
     name: Test on arm64
     runs-on: ubuntu-latest
     steps:
+      - name: Check out code
+        uses: actions/checkout@v3
+        with:
+          submodules: "true"
       # QEMU enables you run arm64 image on x86 machines
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
