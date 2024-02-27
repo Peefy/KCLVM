@@ -167,6 +167,18 @@ pub fn execute(
     let scope = resolve_program(&mut program);
     // Emit parse and resolve errors if exists.
     emit_compile_diag_to_string(sess, &scope, false)?;
+
+    use std::time::Instant;
+
+    let start_time = Instant::now();
+    kclvm_evaluator::eval(&program, args.work_dir.clone().unwrap_or_default()).unwrap();
+    let result = ExecProgramResult::default();
+
+    let end_time = start_time.elapsed();
+
+    println!("Eval 程序运行时间: {:?}", end_time);
+
+    let start_time = Instant::now();
     // Create a temp entry file and the temp dir will be delete automatically
     let temp_dir = tempdir()?;
     let temp_dir_path = temp_dir.path().to_str().ok_or(anyhow!(
@@ -198,6 +210,11 @@ pub fn execute(
 
     remove_file(&lib_path)?;
     clean_tmp_files(&temp_entry_file, &lib_suffix)?;
+
+    let end_time = start_time.elapsed();
+
+    println!("Compile 程序运行时间: {:?}", end_time);
+
     Ok(result)
 }
 

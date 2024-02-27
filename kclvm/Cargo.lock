@@ -1504,6 +1504,7 @@ dependencies = [
  "kclvm-config",
  "kclvm-driver",
  "kclvm-error",
+ "kclvm-evaluator",
  "kclvm-loader",
  "kclvm-parser",
  "kclvm-query",
@@ -1686,6 +1687,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "kclvm-evaluator"
+version = "0.8.0"
+dependencies = [
+ "ahash",
+ "bit-set",
+ "bitflags 1.3.2",
+ "fancy-regex",
+ "indexmap 1.9.3",
+ "kclvm-ast",
+ "kclvm-error",
+ "kclvm-runtime",
+ "kclvm-sema",
+ "once_cell",
+ "phf",
+ "time 0.2.27",
+ "unicode_names2",
+]
+
+[[package]]
 name = "kclvm-lexer"
 version = "0.8.0"
 dependencies = [
@@ -1808,6 +1828,7 @@ dependencies = [
  "kclvm-config",
  "kclvm-driver",
  "kclvm-error",
+ "kclvm-evaluator",
  "kclvm-parser",
  "kclvm-query",
  "kclvm-runtime",

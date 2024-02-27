@@ -260,7 +260,14 @@ impl KclLibRunner {
         unsafe {
             let lib = libloading::Library::new(std::path::PathBuf::from(lib_path).canonicalize()?)?;
             Self::lib_kclvm_plugin_init(&lib, self.opts.plugin_agent_ptr)?;
-            Self::lib_kcl_run(&lib, args)
+            use std::time::Instant;
+
+            let start_time = Instant::now();
+            let result = Self::lib_kcl_run(&lib, args);
+            let end_time = start_time.elapsed();
+
+            println!("Compile 纯碎运行时间: {:?}", end_time);
+            result
         }
     }
 }
