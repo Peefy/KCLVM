@@ -21,7 +21,6 @@ once_cell = "1.5.2"
 prost-wkt = {path = "../third-party/prost-wkt", version = "0.4.1"}
 prost-wkt-types = {path = "../third-party/prost-wkt/wkt-types", version = "0.4.1"}
 
-kclvm-runner = {path = "../runner"}
 kclvm-config = {path = "../config"}
 kclvm-driver = {path = "../driver"}
 kclvm-error = {path = "../error"}
@@ -31,9 +30,7 @@ kclvm-sema = {path = "../sema"}
 kclvm-ast = {path = "../ast"}
 kclvm-ast-pretty = {path = "../ast_pretty"}
 kclvm-runtime = {path = "../runtime"}
-kclvm-tools = {path = "../tools" }
 kclvm-query = {path = "../query"}
-kcl-language-server = {path = "../tools/src/LSP"}
 
 [dev-dependencies]
 criterion = "0.4.0"
