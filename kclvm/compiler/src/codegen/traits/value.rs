@@ -1,4 +1,6 @@
-//! Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
+
+use std::collections::HashMap;
 
 use super::BackendTypes;
 
@@ -32,14 +34,15 @@ pub trait ValueMethods: BackendTypes {
     fn struct_function_value(
         &self,
         functions: &[Self::Function],
+        attr_functions: &HashMap<String, Vec<Self::Function>>,
         runtime_type: &str,
     ) -> Self::Value;
     /// Construct a builtin function value using the function name.
     fn builtin_function_value(&self, function_name: &str) -> Self::Value;
     /// Get a global value pointer named `name`.
     fn global_value_ptr(&self, name: &str) -> Self::Value;
-    /// Get the global runtime context pointer.
-    fn global_ctx_ptr(&self) -> Self::Value;
+    /// Get current runtime context pointer.
+    fn current_runtime_ctx_ptr(&self) -> Self::Value;
 }
 
 /// DerivedValueCalculationMethods defines all value base calculation APIs.

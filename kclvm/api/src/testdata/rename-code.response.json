@@ -1,0 +1,3 @@
+{
+    "changed_codes": {"/mock/path/main.k": "a2 = 1\nb = a2"}
+}

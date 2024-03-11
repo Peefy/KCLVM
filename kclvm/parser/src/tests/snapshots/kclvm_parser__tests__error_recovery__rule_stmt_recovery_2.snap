@@ -1,18 +1,18 @@
 ---
 source: parser/src/tests/error_recovery.rs
-assertion_line: 237
+assertion_line: 292
 expression: "crate::tests::parsing_module_string(r#\"rule A[\"#)"
 ---
 Module {
     filename: "",
     pkg: "",
-    doc: "",
+    doc: None,
     name: "",
     body: [
         Node {
             node: Rule(
                 RuleStmt {
-                    doc: "",
+                    doc: None,
                     name: Node {
                         node: "A",
                         filename: "",
@@ -29,7 +29,6 @@ Module {
                             node: Arguments {
                                 args: [],
                                 defaults: [],
-                                type_annotation_list: [],
                                 ty_list: [],
                             },
                             filename: "",

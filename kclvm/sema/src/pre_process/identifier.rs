@@ -1,5 +1,6 @@
 use crate::info::is_private_field;
 use indexmap::{IndexMap, IndexSet};
+use kclvm_ast::ast::Node;
 use kclvm_ast::pos::GetPos;
 use kclvm_ast::walker::MutSelfMutWalker;
 use kclvm_ast::{ast, walk_if_mut, walk_list_mut};
@@ -55,7 +56,7 @@ impl<'ctx> MutSelfMutWalker<'ctx> for QualifiedIdentifierTransformer {
         let is_config = matches!(assign_stmt.value.node, ast::Expr::Schema(_));
         for target in &assign_stmt.targets {
             if !target.node.names.is_empty() {
-                let name = &target.node.names[0];
+                let name = &target.node.names[0].node;
                 if (is_private_field(name) || !self.global_names.contains_key(name) || is_config)
                     && self.scope_level == 0
                 {
@@ -70,7 +71,7 @@ impl<'ctx> MutSelfMutWalker<'ctx> for QualifiedIdentifierTransformer {
         if aug_assign_stmt.target.node.names.is_empty() {
             return;
         }
-        let name = &aug_assign_stmt.target.node.names[0];
+        let name = &aug_assign_stmt.target.node.names[0].node;
         if is_private_field(name) || !self.global_names.contains_key(name) || is_config {
             if self.scope_level == 0 {
                 self.global_names
@@ -96,7 +97,8 @@ impl<'ctx> MutSelfMutWalker<'ctx> for QualifiedIdentifierTransformer {
         for gen in &mut list_comp.generators {
             for target in &gen.node.targets {
                 if !target.node.names.is_empty() {
-                    self.local_vars.insert(target.node.names[0].to_string());
+                    self.local_vars
+                        .insert(target.node.names[0].node.to_string());
                 }
             }
         }
@@ -108,7 +110,8 @@ impl<'ctx> MutSelfMutWalker<'ctx> for QualifiedIdentifierTransformer {
         for gen in &dict_comp.generators {
             for target in &gen.node.targets {
                 if !target.node.names.is_empty() {
-                    self.local_vars.insert(target.node.names[0].to_string());
+                    self.local_vars
+                        .insert(target.node.names[0].node.to_string());
                 }
             }
         }
@@ -122,7 +125,8 @@ impl<'ctx> MutSelfMutWalker<'ctx> for QualifiedIdentifierTransformer {
     fn walk_quant_expr(&mut self, quant_expr: &'ctx mut ast::QuantExpr) {
         for target in &quant_expr.variables {
             if !target.node.names.is_empty() {
-                self.local_vars.insert(target.node.names[0].to_string());
+                self.local_vars
+                    .insert(target.node.names[0].node.to_string());
             }
         }
         self.walk_expr(&mut quant_expr.target.node);
@@ -133,7 +137,7 @@ impl<'ctx> MutSelfMutWalker<'ctx> for QualifiedIdentifierTransformer {
     fn walk_identifier(&mut self, identifier: &'ctx mut ast::Identifier) {
         if identifier.names.len() >= 2 {
             // skip global name and generator local variables in list/dict comp and quant expression
-            let name = &identifier.names[0];
+            let name = &identifier.names[0].node;
             if !self.global_names.contains_key(name) && !self.local_vars.contains(name) {
                 if let Some(pkgpath) = self.import_names.get(name) {
                     identifier.pkgpath = pkgpath.clone()
@@ -159,11 +163,23 @@ impl<'ctx> MutSelfMutWalker<'ctx> for RawIdentifierTransformer {
         identifier.names = identifier
             .names
             .iter()
-            .map(|n| remove_raw_ident_prefix(n))
-            .collect::<Vec<String>>();
+            .map(|name| {
+                Node::node_with_pos_and_id(
+                    remove_raw_ident_prefix(&name.node),
+                    name.pos(),
+                    name.id.clone(),
+                )
+            })
+            .collect::<Vec<Node<String>>>();
     }
     fn walk_schema_attr(&mut self, schema_attr: &'ctx mut ast::SchemaAttr) {
-        schema_attr.name.node = remove_raw_ident_prefix(&schema_attr.name.node);
+        // If the attribute is an identifier and then fix it.
+        // Note that we do not fix a string-like attribute e.g., `"$name"`
+        if schema_attr.name.end_column - schema_attr.name.column
+            <= schema_attr.name.node.chars().count() as u64
+        {
+            schema_attr.name.node = remove_raw_ident_prefix(&schema_attr.name.node);
+        }
         walk_list_mut!(self, walk_call_expr, schema_attr.decorators);
         walk_if_mut!(self, walk_expr, schema_attr.value);
     }
@@ -190,11 +206,11 @@ impl<'ctx> MutSelfMutWalker<'ctx> for RawIdentifierTransformer {
         walk_if_mut!(self, walk_identifier, rule_stmt.for_host_name);
     }
     fn walk_import_stmt(&mut self, import_stmt: &'ctx mut ast::ImportStmt) {
-        if let Some(name) = import_stmt.asname.as_mut() {
-            *name = remove_raw_ident_prefix(name);
+        if let Some(name) = &mut import_stmt.asname {
+            name.node = remove_raw_ident_prefix(&name.node);
         }
         import_stmt.name = remove_raw_ident_prefix(&import_stmt.name);
-        import_stmt.path = remove_raw_ident_prefix(&import_stmt.path);
+        import_stmt.path.node = remove_raw_ident_prefix(&import_stmt.path.node);
     }
 }
 
@@ -208,7 +224,7 @@ pub fn fix_qualified_identifier<'ctx>(
     // 0. init import names.
     for stmt in &module.body {
         if let ast::Stmt::Import(import_stmt) = &stmt.node {
-            import_names.insert(import_stmt.name.clone(), import_stmt.path.clone());
+            import_names.insert(import_stmt.name.clone(), import_stmt.path.node.clone());
         }
     }
     // 1. fix_global_ident

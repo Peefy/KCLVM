@@ -1,4 +1,4 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 
 use std::boxed::Box;
 use std::cell::RefCell;
@@ -19,7 +19,13 @@ impl ValueRef {
                 rc: Rc::new(RefCell::new(Value::func_value(Box::new(FuncValue {
                     fn_ptr: v.fn_ptr,
                     check_fn_ptr: v.check_fn_ptr,
-                    closure: v.closure.deep_copy(),
+                    // In KCL, functions are all pure, so we only need a shallow
+                    // copy of the closure of the function.
+                    // In addition, this can avoid stack overflow issues caused
+                    // by deep copies of references to schema `self` held by functions
+                    // within the schema. Because schema also holds a reference to
+                    // the function.
+                    closure: v.closure.clone(),
                     name: v.name.clone(),
                     runtime_type: v.runtime_type.clone(),
                     is_external: v.is_external,
@@ -57,10 +63,14 @@ impl ValueRef {
                         &index.clone(),
                     );
                 }
+                dict.set_potential_schema_type(&v.potential_schema.clone().unwrap_or_default());
                 dict
             }
             Value::schema_value(ref v) => {
                 let mut dict = ValueRef::from(Value::dict_value(Box::new(DictValue::new(&[]))));
+                dict.set_potential_schema_type(
+                    &v.config.potential_schema.clone().unwrap_or_default(),
+                );
                 for (key, val) in &v.config.values {
                     let op = v
                         .config
@@ -86,6 +96,10 @@ impl ValueRef {
                         config_keys: v.config_keys.clone(),
                         config_meta: v.config_meta.clone(),
                         optional_mapping: v.optional_mapping.clone(),
+                        // For KCL, args and kwargs are both immutable within the schema scope,
+                        // so here we only need to clone the references.
+                        args: v.args.clone(),
+                        kwargs: v.kwargs.clone(),
                     })))),
                 };
             }

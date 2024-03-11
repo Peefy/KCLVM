@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use indexmap::IndexMap;
 use once_cell::sync::Lazy;
@@ -22,49 +22,33 @@ macro_rules! register_decorator {
 register_decorator! {
     deprecated => Type::function(
         None,
-        Rc::new(Type::ANY),
+        Arc::new(Type::ANY),
         &[
             Parameter {
                 name: "version".to_string(),
-                ty: Rc::new(Type::STR),
+                ty: Arc::new(Type::STR),
                 has_default: true,
             },
             Parameter {
                 name: "reason".to_string(),
-                ty: Rc::new(Type::STR),
+                ty: Arc::new(Type::STR),
                 has_default: true,
             },
             Parameter {
                 name: "strict".to_string(),
-                ty: Rc::new(Type::BOOL),
+                ty: Arc::new(Type::BOOL),
                 has_default: true,
             },
         ],
-        r#"This decorator is used to get the deprecation message according to the wrapped key-value pair.
-
-        Examples
-        --------
-        @deprecated(version="v1.16", reason="The age attribute was deprecated", strict=True)
-        schema Person:
-            name: str
-            age: int
-        "#,
+        r#"This decorator is used to get the deprecation message according to the wrapped key-value pair."#,
         false,
         None,
     )
     info => Type::function(
         None,
-        Rc::new(Type::ANY),
+        Arc::new(Type::ANY),
         &[],
-        r#"Info decorator is used to mark some compile-time information for external API queries
-
-        Examples
-        --------
-        @info(message="User message")
-        schema Person:
-            name: str
-            age: int
-        "#,
+        r#"Info decorator is used to mark some compile-time information for external API queries"#,
         true,
         Some(0),
     )

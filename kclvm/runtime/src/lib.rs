@@ -1,10 +1,14 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 
 use kclvm_runtime_internal_macros::runtime_fn;
 
 // api-spec:       kclvm_context_t
 // api-spec(c):    typedef struct kclvm_context_t kclvm_context_t;
 // api-spec(llvm): %"kclvm_context_t" = type { i8* }
+
+// api-spec:       kclvm_eval_scope_t
+// api-spec(c):    typedef struct kclvm_eval_scope_t kclvm_eval_scope_t;
+// api-spec(llvm): %"kclvm_eval_scope_t" = type { i8* }
 
 // api-spec:       kclvm_type_t
 // api-spec(c):    typedef struct kclvm_type_t kclvm_type_t;
@@ -77,6 +81,8 @@ pub use self::collection::*;
 pub mod crypto;
 pub use self::crypto::*;
 
+mod eval;
+
 pub mod datetime;
 pub use self::datetime::*;
 
@@ -98,14 +104,14 @@ pub use self::regex::*;
 pub mod stdlib;
 pub use self::stdlib::*;
 
-pub mod testing;
-pub use self::testing::*;
-
 pub mod units;
 pub use self::units::*;
 
 pub mod yaml;
 pub use self::yaml::*;
+
+pub mod file;
+pub use self::file::*;
 
 pub mod _kcl_run;
 pub use self::_kcl_run::*;

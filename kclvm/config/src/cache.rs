@@ -1,10 +1,10 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 extern crate chrono;
 use super::modfile::KCL_FILE_SUFFIX;
-use crypto::digest::Digest;
-use crypto::md5::Md5;
+use anyhow::Result;
 use fslock::LockFile;
-use kclvm_utils::pkgpath::parse_external_pkg_name;
+use kclvm_utils::pkgpath::{parse_external_pkg_name, rm_external_pkg_name};
+use md5::{Digest, Md5};
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::HashMap;
 use std::error;
@@ -18,8 +18,9 @@ const LOCK_SUFFIX: &str = ".lock";
 const DEFAULT_CACHE_DIR: &str = ".kclvm/cache";
 const CACHE_INFO_FILENAME: &str = "info";
 const KCL_SUFFIX_PATTERN: &str = "*.k";
+pub const KCL_CACHE_PATH_ENV_VAR: &str = "KCL_CACHE_PATH";
 
-pub type CacheInfo = String;
+pub type CacheInfo = Vec<u8>;
 pub type Cache = HashMap<String, CacheInfo>;
 
 #[allow(dead_code)]
@@ -49,6 +50,7 @@ where
     if root.is_empty() || pkgpath.is_empty() {
         None
     } else {
+        // The cache file path
         let filename = get_cache_filename(root, target, pkgpath, Some(&option.cache_dir));
         if !Path::new(&filename).exists() {
             None
@@ -58,49 +60,88 @@ where
             // If the file exists and it is an internal package or an external package,
             // Check the cache info.
             let pkg_name = parse_external_pkg_name(pkgpath).ok()?;
-            if Path::new(&real_path).exists()
-                || (external_pkgs.get(&pkg_name).is_some()
-                    && Path::new(external_pkgs.get(&pkg_name)?).exists())
+
+            // If it is an internal package
+            let real_path = if Path::new(&real_path).exists() {
+                real_path
+                // If it is an external package
+            } else if external_pkgs.get(&pkg_name).is_some()
+                && Path::new(external_pkgs.get(&pkg_name)?).exists()
             {
-                let cache_info = read_info_cache(root, target, Some(&option.cache_dir));
-                let relative_path = real_path.replacen(root, ".", 1);
-                match cache_info.get(&relative_path) {
-                    Some(path_info_in_cache) => {
-                        if get_cache_info(&real_path).ne(path_info_in_cache) {
-                            return None;
-                        }
+                get_pkg_realpath_from_pkgpath(
+                    external_pkgs.get(&pkg_name)?,
+                    &rm_external_pkg_name(pkgpath).ok()?,
+                )
+            } else {
+                return None;
+            };
+
+            // get the cache info from cache file "info"
+            let cache_info = read_info_cache(root, target, Some(&option.cache_dir));
+            let relative_path = real_path.replacen(root, ".", 1);
+            match cache_info.get(&relative_path) {
+                Some(path_info_in_cache) => {
+                    // calculate the md5 of the file and compare it with the cache info
+                    if get_cache_info(&real_path).ne(path_info_in_cache) {
+                        return None;
                     }
-                    None => return None,
-                };
-            }
+                }
+                None => return None,
+            };
+            // If the md5 is the same, load the cache file
             load_data_from_file(&filename)
         }
     }
 }
 
 /// Save pkg cache.
-pub fn save_pkg_cache<T>(root: &str, target: &str, pkgpath: &str, data: T, option: CacheOption)
+pub fn save_pkg_cache<T>(
+    root: &str,
+    target: &str,
+    pkgpath: &str,
+    data: T,
+    option: CacheOption,
+    external_pkgs: &HashMap<String, String>,
+) -> Result<()>
 where
     T: Serialize,
 {
     if root.is_empty() || pkgpath.is_empty() {
-        return;
+        return Err(anyhow::anyhow!(
+            "failed to save package cache {} to root {}",
+            pkgpath,
+            root
+        ));
     }
     let dst_filename = get_cache_filename(root, target, pkgpath, Some(&option.cache_dir));
     let real_path = get_pkg_realpath_from_pkgpath(root, pkgpath);
     if Path::new(&real_path).exists() {
         write_info_cache(root, target, Some(&option.cache_dir), &real_path).unwrap();
+    } else {
+        // If the file does not exist, it is an external package.
+        let pkg_name = parse_external_pkg_name(pkgpath)?;
+        let real_path = get_pkg_realpath_from_pkgpath(
+            external_pkgs
+                .get(&pkg_name)
+                .ok_or(anyhow::anyhow!("failed to save cache"))?,
+            &rm_external_pkg_name(pkgpath)?,
+        );
+        if Path::new(&real_path).exists() {
+            write_info_cache(root, target, Some(&option.cache_dir), &real_path).unwrap();
+        }
     }
     let cache_dir = get_cache_dir(root, Some(&option.cache_dir));
     create_dir_all(&cache_dir).unwrap();
     let tmp_filename = temp_file(&cache_dir, pkgpath);
-    save_data_to_file(&dst_filename, &tmp_filename, data)
+    save_data_to_file(&dst_filename, &tmp_filename, data);
+    Ok(())
 }
 
 #[inline]
 fn get_cache_dir(root: &str, cache_dir: Option<&str>) -> String {
     let cache_dir = cache_dir.unwrap_or(DEFAULT_CACHE_DIR);
-    Path::new(root)
+    let root = std::env::var(KCL_CACHE_PATH_ENV_VAR).unwrap_or(root.to_string());
+    Path::new(&root)
         .join(cache_dir)
         .join(format!("{}-{}", version::VERSION, version::CHECK_SUM))
         .display()
@@ -111,7 +152,8 @@ fn get_cache_dir(root: &str, cache_dir: Option<&str>) -> String {
 #[allow(dead_code)]
 fn get_cache_filename(root: &str, target: &str, pkgpath: &str, cache_dir: Option<&str>) -> String {
     let cache_dir = cache_dir.unwrap_or(DEFAULT_CACHE_DIR);
-    Path::new(root)
+    let root = std::env::var(KCL_CACHE_PATH_ENV_VAR).unwrap_or(root.to_string());
+    Path::new(&root)
         .join(cache_dir)
         .join(format!("{}-{}", version::VERSION, version::CHECK_SUM))
         .join(target)
@@ -123,7 +165,8 @@ fn get_cache_filename(root: &str, target: &str, pkgpath: &str, cache_dir: Option
 #[inline]
 fn get_cache_info_filename(root: &str, target: &str, cache_dir: Option<&str>) -> String {
     let cache_dir = cache_dir.unwrap_or(DEFAULT_CACHE_DIR);
-    Path::new(root)
+    let root = std::env::var(KCL_CACHE_PATH_ENV_VAR).unwrap_or(root.to_string());
+    Path::new(&root)
         .join(cache_dir)
         .join(format!("{}-{}", version::VERSION, version::CHECK_SUM))
         .join(target)
@@ -193,7 +236,7 @@ fn get_cache_info(path_str: &str) -> CacheInfo {
             md5.input(buf.as_slice());
         }
     }
-    md5.result_str()
+    md5.result().to_vec()
 }
 
 pub fn get_pkg_realpath_from_pkgpath(root: &str, pkgpath: &str) -> String {

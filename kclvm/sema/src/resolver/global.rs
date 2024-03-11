@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::info::is_private_field;
 use crate::resolver::Resolver;
@@ -9,7 +9,7 @@ use crate::ty::{
 };
 use indexmap::IndexMap;
 use kclvm_ast::ast;
-use kclvm_ast::walker::MutSelfTypedResultWalker;
+use kclvm_ast_pretty::{print_ast_node, print_schema_expr, ASTNode};
 use kclvm_error::*;
 
 use super::doc::parse_doc_string;
@@ -39,24 +39,42 @@ impl<'ctx> Resolver<'ctx> {
                         let (name, doc, is_mixin, is_protocol, is_rule) = match &stmt.node {
                             ast::Stmt::Schema(schema_stmt) => (
                                 &schema_stmt.name.node,
-                                &schema_stmt.doc,
+                                {
+                                    if let Some(doc) = &schema_stmt.doc {
+                                        doc.node.clone()
+                                    } else {
+                                        "".to_string()
+                                    }
+                                },
                                 schema_stmt.is_mixin,
                                 schema_stmt.is_protocol,
                                 false,
                             ),
-                            ast::Stmt::Rule(rule_stmt) => {
-                                (&rule_stmt.name.node, &rule_stmt.doc, false, false, true)
-                            }
+                            ast::Stmt::Rule(rule_stmt) => (
+                                &rule_stmt.name.node,
+                                {
+                                    if let Some(doc) = &rule_stmt.doc {
+                                        doc.node.clone()
+                                    } else {
+                                        "".to_string()
+                                    }
+                                },
+                                false,
+                                false,
+                                true,
+                            ),
+
                             _ => continue,
                         };
                         if self.contains_object(name) {
                             self.handler.add_error(
                                 ErrorKind::UniqueKeyError,
                                 &[Message {
-                                    pos: start.clone(),
+                                    range: stmt.get_span_pos(),
                                     style: Style::LineAndColumn,
                                     message: format!("unique key error name '{}'", name),
                                     note: None,
+                                    suggested_replacement: None,
                                 }],
                             );
                             continue;
@@ -67,6 +85,7 @@ impl<'ctx> Resolver<'ctx> {
                             pkgpath: self.ctx.pkgpath.clone(),
                             filename: self.ctx.filename.clone(),
                             doc: parsed_doc.summary.clone(),
+                            examples: parsed_doc.examples,
                             is_instance: false,
                             is_mixin,
                             is_protocol,
@@ -79,7 +98,7 @@ impl<'ctx> Resolver<'ctx> {
                                 doc: parsed_doc.summary.clone(),
                                 params: vec![],
                                 self_ty: None,
-                                return_ty: Rc::new(Type::VOID),
+                                return_ty: Arc::new(Type::VOID),
                                 is_variadic: false,
                                 kw_only_index: None,
                             }),
@@ -92,9 +111,8 @@ impl<'ctx> Resolver<'ctx> {
                                 name: name.to_string(),
                                 start,
                                 end,
-                                ty: Rc::new(Type::schema(schema_ty.clone())),
+                                ty: Arc::new(Type::schema(schema_ty.clone())),
                                 kind: ScopeObjectKind::Definition,
-                                used: false,
                                 doc: Some(parsed_doc.summary.clone()),
                             },
                         )
@@ -137,9 +155,8 @@ impl<'ctx> Resolver<'ctx> {
                                     name: schema_ty.name.to_string(),
                                     start,
                                     end,
-                                    ty: Rc::new(Type::schema(schema_ty.clone())),
+                                    ty: Arc::new(Type::schema(schema_ty.clone())),
                                     kind: ScopeObjectKind::Definition,
-                                    used: false,
                                     doc: Some(schema_ty.doc),
                                 },
                             )
@@ -170,17 +187,19 @@ impl<'ctx> Resolver<'ctx> {
                 }
             }
             None => {
+                let pos = Position {
+                    filename: self.ctx.filename.clone(),
+                    line: 1,
+                    column: None,
+                };
                 self.handler.add_error(
                     ErrorKind::CannotFindModule,
                     &[Message {
-                        pos: Position {
-                            filename: self.ctx.filename.clone(),
-                            line: 1,
-                            column: None,
-                        },
+                        range: (pos.clone(), pos),
                         style: Style::Line,
                         message: format!("pkgpath {} not found in the program", self.ctx.pkgpath),
                         note: None,
+                        suggested_replacement: None,
                     }],
                 );
             }
@@ -198,7 +217,7 @@ impl<'ctx> Resolver<'ctx> {
                     self.init_scope_with_assign_stmt(assign_stmt, unique_check)
                 }
                 ast::Stmt::Unification(unification_stmt) => {
-                    self.init_scope_with_unification_stmt(unification_stmt, unique_check)
+                    self.init_scope_with_unification_stmt(unification_stmt)
                 }
                 ast::Stmt::If(if_stmt) => {
                     self.init_scope_with_stmts(&if_stmt.body, unique_check);
@@ -216,49 +235,52 @@ impl<'ctx> Resolver<'ctx> {
     ) {
         for target in &assign_stmt.targets {
             if target.node.names.is_empty() {
-                self.handler
-                    .add_compile_error("missing target in the assign statement", target.get_pos());
+                self.handler.add_compile_error(
+                    "missing target in the assign statement",
+                    target.get_span_pos(),
+                );
                 continue;
             }
-            let name = &target.node.names[0];
+            let name = &target.node.names[0].node;
             let (start, end) = target.get_span_pos();
             if self.contains_object(name) && !is_private_field(name) && unique_check {
                 self.handler.add_error(
                     ErrorKind::ImmutableError,
                     &[
                         Message {
-                            pos: start.clone(),
+                            range: target.get_span_pos(),
                             style: Style::LineAndColumn,
                             message: format!(
                             "Can not change the value of '{}', because it was declared immutable",
                             name
                         ),
                             note: None,
+                            suggested_replacement: None,
                         },
                         Message {
-                            pos: self
+                            range: self
                                 .scope
                                 .borrow()
                                 .elems
                                 .get(name)
                                 .unwrap()
                                 .borrow()
-                                .start
-                                .clone(),
+                                .get_span_pos(),
                             style: Style::LineAndColumn,
                             message: format!("The variable '{}' is declared here", name),
                             note: Some(format!(
                                 "change the variable name to '_{}' to make it mutable",
                                 name
                             )),
+                            suggested_replacement: None,
                         },
                     ],
                 );
                 continue;
             }
             let ty = if let Some(ty_annotation) = &assign_stmt.ty {
-                let ty = &ty_annotation.node;
-                let ty = self.parse_ty_with_scope(ty, ty_annotation.get_pos());
+                let ty =
+                    self.parse_ty_with_scope(Some(&ty_annotation), ty_annotation.get_span_pos());
                 if let Some(obj) = self.scope.borrow().elems.get(name) {
                     let obj = obj.borrow();
                     if !is_upper_bound(obj.ty.clone(), ty.clone()) {
@@ -266,7 +288,7 @@ impl<'ctx> Resolver<'ctx> {
                             ErrorKind::TypeError,
                             &[
                                 Message {
-                                    pos: start.clone(),
+                                    range: target.get_span_pos(),
                                     style: Style::LineAndColumn,
                                     message: format!(
                                         "can not change the type of '{}' to {}",
@@ -274,12 +296,14 @@ impl<'ctx> Resolver<'ctx> {
                                         obj.ty.ty_str()
                                     ),
                                     note: None,
+                                    suggested_replacement: None,
                                 },
                                 Message {
-                                    pos: obj.start.clone(),
+                                    range: obj.get_span_pos(),
                                     style: Style::LineAndColumn,
                                     message: format!("expected {}", obj.ty.ty_str()),
                                     note: None,
+                                    suggested_replacement: None,
                                 },
                             ],
                         );
@@ -299,59 +323,20 @@ impl<'ctx> Resolver<'ctx> {
                     end,
                     ty,
                     kind: ScopeObjectKind::Variable,
-                    used: false,
                     doc: None,
                 },
             );
         }
     }
 
-    fn init_scope_with_unification_stmt(
-        &mut self,
-        unification_stmt: &'ctx ast::UnificationStmt,
-        unique_check: bool,
-    ) {
+    fn init_scope_with_unification_stmt(&mut self, unification_stmt: &'ctx ast::UnificationStmt) {
         let target = &unification_stmt.target;
         if target.node.names.is_empty() {
             return;
         }
-        let name = &target.node.names[0];
+        let name = &target.node.names[0].node;
         let (start, end) = target.get_span_pos();
-        if self.contains_object(name) && !is_private_field(name) && unique_check {
-            self.handler.add_error(
-                ErrorKind::ImmutableError,
-                &[
-                    Message {
-                        pos: start,
-                        style: Style::LineAndColumn,
-                        message: format!(
-                            "Can not change the value of '{}', because it was declared immutable",
-                            name
-                        ),
-                        note: None,
-                    },
-                    Message {
-                        pos: self
-                            .scope
-                            .borrow()
-                            .elems
-                            .get(name)
-                            .unwrap()
-                            .borrow()
-                            .start
-                            .clone(),
-                        style: Style::LineAndColumn,
-                        message: format!("The variable '{}' is declared here", name),
-                        note: Some(format!(
-                            "change the variable name to '_{}' to make it mutable",
-                            name
-                        )),
-                    },
-                ],
-            );
-            return;
-        }
-        let ty = self.walk_identifier(&unification_stmt.value.node.name.node);
+        let ty = self.walk_identifier_expr(&unification_stmt.value.node.name);
         self.insert_object(
             name,
             ScopeObject {
@@ -360,7 +345,6 @@ impl<'ctx> Resolver<'ctx> {
                 end,
                 ty,
                 kind: ScopeObjectKind::Variable,
-                used: false,
                 doc: None,
             },
         );
@@ -371,7 +355,7 @@ impl<'ctx> Resolver<'ctx> {
         rule_stmt: &'ctx ast::RuleStmt,
     ) -> Option<Box<SchemaType>> {
         if let Some(host_name) = &rule_stmt.for_host_name {
-            let ty = self.walk_identifier(&host_name.node);
+            let ty = self.walk_identifier_expr(&host_name);
             match &ty.kind {
                 TypeKind::Schema(schema_ty) if schema_ty.is_protocol && !schema_ty.is_instance => {
                     Some(Box::new(schema_ty.clone()))
@@ -380,13 +364,14 @@ impl<'ctx> Resolver<'ctx> {
                     self.handler.add_error(
                         ErrorKind::IllegalInheritError,
                         &[Message {
-                            pos: host_name.get_pos(),
+                            range: host_name.get_span_pos(),
                             style: Style::LineAndColumn,
                             message: format!(
                                 "invalid schema inherit object type, expect protocol, got '{}'",
                                 ty.ty_str()
                             ),
                             note: None,
+                            suggested_replacement: None,
                         }],
                     );
                     None
@@ -406,16 +391,17 @@ impl<'ctx> Resolver<'ctx> {
                 self.handler.add_error(
                     ErrorKind::IllegalInheritError,
                     &[Message {
-                        pos: host_name.get_pos(),
+                        range: host_name.get_span_pos(),
                         style: Style::LineAndColumn,
                         message: "only schema mixin can inherit from protocol".to_string(),
                         note: None,
+                        suggested_replacement: None,
                     }],
                 );
                 return None;
             }
             // Mixin type check with protocol
-            let ty = self.walk_identifier(&host_name.node);
+            let ty = self.walk_identifier_expr(&host_name);
             match &ty.kind {
                 TypeKind::Schema(schema_ty) if schema_ty.is_protocol && !schema_ty.is_instance => {
                     Some(Box::new(schema_ty.clone()))
@@ -424,13 +410,14 @@ impl<'ctx> Resolver<'ctx> {
                     self.handler.add_error(
                         ErrorKind::IllegalInheritError,
                         &[Message {
-                            pos: host_name.get_pos(),
+                            range: host_name.get_span_pos(),
                             style: Style::LineAndColumn,
                             message: format!(
                                 "invalid schema inherit object type, expect protocol, got '{}'",
                                 ty.ty_str()
                             ),
                             note: None,
+                            suggested_replacement: None,
                         }],
                     );
                     None
@@ -446,7 +433,7 @@ impl<'ctx> Resolver<'ctx> {
         schema_stmt: &'ctx ast::SchemaStmt,
     ) -> Option<Box<SchemaType>> {
         if let Some(parent_name) = &schema_stmt.parent_name {
-            let ty = self.walk_identifier(&parent_name.node);
+            let ty = self.walk_identifier_expr(&parent_name);
             match &ty.kind {
                 TypeKind::Schema(schema_ty)
                     if !schema_ty.is_protocol && !schema_ty.is_mixin && !schema_ty.is_instance =>
@@ -457,13 +444,14 @@ impl<'ctx> Resolver<'ctx> {
                     self.handler.add_error(
                         ErrorKind::IllegalInheritError,
                         &[Message {
-                            pos: parent_name.get_pos(),
+                            range: parent_name.get_span_pos(),
                             style: Style::LineAndColumn,
                             message: format!(
                                 "invalid schema inherit object type, expect schema, got '{}'",
                                 ty.ty_str()
                             ),
                             note: None,
+                            suggested_replacement: None,
                         }],
                     );
                     None
@@ -482,31 +470,31 @@ impl<'ctx> Resolver<'ctx> {
         should_add_schema_ref: bool,
     ) -> SchemaType {
         let name = &schema_stmt.name.node;
-        let pos = schema_stmt.name.get_end_pos();
         if RESERVED_TYPE_IDENTIFIERS.contains(&name.as_str()) {
             self.handler.add_compile_error(
                 &format!(
                     "schema name '{}' cannot be the same as the built-in types ({:?})",
                     name, RESERVED_TYPE_IDENTIFIERS
                 ),
-                pos.clone(),
+                schema_stmt.name.get_span_pos(),
             );
         }
         if schema_stmt.is_protocol && !name.ends_with(PROTOCOL_SUFFIX) {
             self.handler.add_error(
                 ErrorKind::CompileError,
                 &[Message {
-                    pos: pos.clone(),
+                    range: schema_stmt.name.get_span_pos(),
                     style: Style::LineAndColumn,
                     message: format!("schema protocol name must end with '{}'", PROTOCOL_SUFFIX),
                     note: None,
+                    suggested_replacement: None,
                 }],
             );
         }
         if schema_stmt.is_protocol && !schema_stmt.has_only_attribute_definitions() {
             self.handler.add_compile_error(
                 "a protocol is only allowed to define attributes in it",
-                pos.clone(),
+                schema_stmt.name.get_span_pos(),
             );
         }
         let parent_name = parent_ty
@@ -516,10 +504,11 @@ impl<'ctx> Resolver<'ctx> {
             self.handler.add_error(
                 ErrorKind::IllegalInheritError,
                 &[Message {
-                    pos: pos.clone(),
+                    range: schema_stmt.name.get_span_pos(),
                     style: Style::LineAndColumn,
                     message: format!("mixin inheritance {} is prohibited", parent_name),
                     note: None,
+                    suggested_replacement: None,
                 }],
             );
         }
@@ -534,21 +523,22 @@ impl<'ctx> Resolver<'ctx> {
                     self.handler.add_error(
                         ErrorKind::IndexSignatureError,
                         &[Message {
-                            pos: index_signature.get_pos(),
+                            range: index_signature.get_span_pos(),
                             style: Style::LineAndColumn,
                             message: format!("index signature attribute name '{}' cannot have the same name as schema attributes", index_sign_name),
                             note: None,
+                            suggested_replacement: None,
                         }],
                     );
                 }
             }
             let key_ty = self.parse_ty_str_with_scope(
-                &index_signature.node.key_type.node,
-                index_signature.node.key_type.get_pos(),
+                &index_signature.node.key_ty.node.to_string(),
+                index_signature.node.key_ty.get_span_pos(),
             );
             let val_ty = self.parse_ty_with_scope(
-                &index_signature.node.value_ty.node,
-                index_signature.node.value_type.get_pos(),
+                Some(&index_signature.node.value_ty),
+                index_signature.node.value_ty.get_span_pos(),
             );
             if !self
                 .ctx
@@ -558,10 +548,11 @@ impl<'ctx> Resolver<'ctx> {
                 self.handler.add_error(
                     ErrorKind::IndexSignatureError,
                     &[Message {
-                        pos: pos.clone(),
+                        range: schema_stmt.name.get_span_pos(),
                         style: Style::LineAndColumn,
                         message: format!("invalid index signature key type: '{}'", key_ty.ty_str()),
                         note: None,
+                        suggested_replacement: None,
                     }],
                 );
             }
@@ -576,45 +567,59 @@ impl<'ctx> Resolver<'ctx> {
         };
         // Schema attributes
         let mut attr_obj_map: IndexMap<String, SchemaAttr> = IndexMap::default();
-        attr_obj_map.insert(
-            kclvm_runtime::SCHEMA_SETTINGS_ATTR_NAME.to_string(),
-            SchemaAttr {
-                is_optional: true,
-                has_default: false,
-                ty: Type::dict_ref(self.str_ty(), self.any_ty()),
-                pos: Position {
-                    filename: self.ctx.filename.clone(),
-                    line: pos.line,
-                    column: pos.column,
-                },
-                doc: None,
-            },
+        let parsed_doc = parse_doc_string(
+            &schema_stmt
+                .doc
+                .as_ref()
+                .map(|doc| doc.node.clone())
+                .unwrap_or_default(),
         );
-        let parsed_doc = parse_doc_string(&schema_stmt.doc);
         for stmt in &schema_stmt.body {
-            let pos = stmt.get_pos();
-            let (name, ty, is_optional, has_default) = match &stmt.node {
+            let (name, ty, is_optional, default, decorators, range) = match &stmt.node {
                 ast::Stmt::Unification(unification_stmt) => {
                     let name = unification_stmt.value.node.name.node.get_name();
-                    let ty = self.parse_ty_str_with_scope(&name, pos.clone());
-                    let is_optional = true;
-                    let has_default = true;
+                    let ty = self.parse_ty_str_with_scope(&name, stmt.get_span_pos());
+                    let is_optional = false;
+                    let default = if self.options.resolve_val {
+                        print_schema_expr(&unification_stmt.value.node)
+                    } else {
+                        "".to_string()
+                    };
                     (
                         unification_stmt.target.node.get_name(),
                         ty,
                         is_optional,
-                        has_default,
+                        Some(default),
+                        vec![],
+                        stmt.get_span_pos(),
                     )
                 }
                 ast::Stmt::SchemaAttr(schema_attr) => {
                     let name = schema_attr.name.node.clone();
-                    let ty = self.parse_ty_with_scope(
-                        &schema_attr.ty.node.clone(),
-                        schema_attr.ty.get_pos(),
-                    );
+                    let ty = self
+                        .parse_ty_with_scope(Some(&schema_attr.ty), schema_attr.ty.get_span_pos());
                     let is_optional = schema_attr.is_optional;
-                    let has_default = schema_attr.value.is_some();
-                    (name, ty, is_optional, has_default)
+                    let default = schema_attr.value.as_ref().map(|v| {
+                        if self.options.resolve_val {
+                            print_ast_node(ASTNode::Expr(v))
+                        } else {
+                            "".to_string()
+                        }
+                    });
+                    // Schema attribute decorators
+                    let decorators = self.resolve_decorators(
+                        &schema_attr.decorators,
+                        DecoratorTarget::Attribute,
+                        &name,
+                    );
+                    (
+                        name,
+                        ty,
+                        is_optional,
+                        default,
+                        decorators,
+                        stmt.get_span_pos(),
+                    )
                 }
                 _ => continue,
             };
@@ -635,10 +640,12 @@ impl<'ctx> Resolver<'ctx> {
                     name.clone(),
                     SchemaAttr {
                         is_optional: existed_attr.map_or(is_optional, |attr| attr.is_optional),
-                        has_default,
+                        has_default: default.is_some(),
+                        default,
                         ty: ty.clone(),
-                        pos: pos.clone(),
+                        range: range.clone(),
                         doc: doc_str,
+                        decorators,
                     },
                 );
             }
@@ -652,7 +659,7 @@ impl<'ctx> Resolver<'ctx> {
                         attr_obj_map.get(&name).unwrap().ty.clone().ty_str(),
                         ty.ty_str()
                     ),
-                    pos.clone(),
+                    stmt.get_span_pos(),
                 );
             }
             if is_optional && !attr_obj_map.get(&name).unwrap().is_optional {
@@ -661,7 +668,7 @@ impl<'ctx> Resolver<'ctx> {
                         "can't change the required schema attribute of '{}' to optional",
                         name
                     ),
-                    pos.clone(),
+                    stmt.get_span_pos(),
                 );
             }
             if let Some(ref index_signature_obj) = index_signature {
@@ -671,10 +678,11 @@ impl<'ctx> Resolver<'ctx> {
                     self.handler.add_error(
                         ErrorKind::IndexSignatureError,
                         &[Message {
-                            pos: pos.clone(),
+                            range: stmt.get_span_pos(),
                             style: Style::LineAndColumn,
                             message: format!("the type '{}' of schema attribute '{}' does not meet the index signature definition {}", ty.ty_str(), name, index_signature_obj.ty_str()),
                             note: None,
+                            suggested_replacement: None,
                         }],
                     );
                 }
@@ -683,22 +691,23 @@ impl<'ctx> Resolver<'ctx> {
         // Mixin types
         let mut mixin_types: Vec<SchemaType> = vec![];
         for mixin in &schema_stmt.mixins {
-            let mixin_names = &mixin.node.names;
+            let mixin_names = &mixin.node.get_names();
             if !mixin_names[mixin_names.len() - 1].ends_with(MIXIN_SUFFIX) {
                 self.handler.add_error(
                     ErrorKind::NameError,
                     &[Message {
-                        pos: mixin.get_pos(),
+                        range: mixin.get_span_pos(),
                         style: Style::LineAndColumn,
                         message: format!(
                             "a valid mixin name should end with 'Mixin', got '{}'",
                             mixin_names[mixin_names.len() - 1]
                         ),
                         note: None,
+                        suggested_replacement: None,
                     }],
                 );
             }
-            let ty = self.walk_identifier(&mixin.node);
+            let ty = self.walk_identifier_expr(&mixin);
             let mixin_ty = match &ty.kind {
                 TypeKind::Schema(schema_ty)
                     if !schema_ty.is_protocol && schema_ty.is_mixin && !schema_ty.is_instance =>
@@ -709,13 +718,14 @@ impl<'ctx> Resolver<'ctx> {
                     self.handler.add_error(
                         ErrorKind::IllegalInheritError,
                         &[Message {
-                            pos: mixin.get_pos(),
+                            range: mixin.get_span_pos(),
                             style: Style::LineAndColumn,
                             message: format!(
                                 "illegal schema mixin object type, expected mixin, got '{}'",
                                 ty.ty_str()
                             ),
                             note: None,
+                            suggested_replacement: None,
                         }],
                     );
                     None
@@ -736,22 +746,21 @@ impl<'ctx> Resolver<'ctx> {
         if let Some(args) = &schema_stmt.args {
             for (i, para) in args.node.args.iter().enumerate() {
                 let name = para.node.get_name();
-                let pos = para.get_pos();
                 if schema_attr_names.contains(&name) {
                     self.handler.add_compile_error(
                         &format!(
                             "Unexpected parameter name '{}' with the same name as the schema attribute",
                             name
                         ),
-                        pos.clone(),
+                        para.get_span_pos(),
                     );
                 }
-                let ty = args.node.get_arg_type(i);
-                let ty = self.parse_ty_with_scope(&ty, pos);
+                let ty = args.node.get_arg_type_node(i);
+                let ty = self.parse_ty_with_scope(ty, para.get_span_pos());
                 params.push(Parameter {
                     name,
                     ty: ty.clone(),
-                    has_default: args.node.defaults.get(i).is_some(),
+                    has_default: args.node.defaults.get(i).map_or(false, |arg| arg.is_some()),
                 });
             }
         }
@@ -769,7 +778,7 @@ impl<'ctx> Resolver<'ctx> {
                             "There is a circular reference between schema {} and {}",
                             name, parent_ty.name,
                         ),
-                        schema_stmt.get_pos(),
+                        schema_stmt.get_span_pos(),
                     );
                 }
             }
@@ -784,6 +793,7 @@ impl<'ctx> Resolver<'ctx> {
             pkgpath: self.ctx.pkgpath.clone(),
             filename: self.ctx.filename.clone(),
             doc: parsed_doc.summary.clone(),
+            examples: parsed_doc.examples,
             is_instance: false,
             is_mixin: schema_stmt.is_mixin,
             is_protocol: schema_stmt.is_protocol,
@@ -796,7 +806,7 @@ impl<'ctx> Resolver<'ctx> {
                 doc: parsed_doc.summary.clone(),
                 params,
                 self_ty: None,
-                return_ty: Rc::new(Type::ANY),
+                return_ty: Arc::new(Type::ANY),
                 is_variadic: false,
                 kw_only_index: None,
             }),
@@ -805,7 +815,7 @@ impl<'ctx> Resolver<'ctx> {
         };
         self.ctx
             .schema_mapping
-            .insert(schema_runtime_ty, Rc::new(RefCell::new(schema_ty.clone())));
+            .insert(schema_runtime_ty, Arc::new(RefCell::new(schema_ty.clone())));
         schema_ty
     }
 
@@ -816,20 +826,19 @@ impl<'ctx> Resolver<'ctx> {
         should_add_schema_ref: bool,
     ) -> SchemaType {
         let name = &rule_stmt.name.node;
-        let pos = rule_stmt.name.get_end_pos();
         if RESERVED_TYPE_IDENTIFIERS.contains(&name.as_str()) {
             self.handler.add_compile_error(
                 &format!(
                     "rule name '{}' cannot be the same as the built-in types ({:?})",
                     name, RESERVED_TYPE_IDENTIFIERS
                 ),
-                pos,
+                rule_stmt.name.get_span_pos(),
             );
         }
         // Parent types
         let mut parent_types: Vec<SchemaType> = vec![];
         for rule in &rule_stmt.parent_rules {
-            let ty = self.walk_identifier(&rule.node);
+            let ty = self.walk_identifier_expr(&rule);
             let parent_ty = match &ty.kind {
                 TypeKind::Schema(schema_ty) if schema_ty.is_rule && !schema_ty.is_instance => {
                     Some(schema_ty.clone())
@@ -838,10 +847,11 @@ impl<'ctx> Resolver<'ctx> {
                     self.handler.add_error(
                         ErrorKind::IllegalInheritError,
                         &[Message {
-                            pos: rule.get_pos(),
+                            range: rule.get_span_pos(),
                             style: Style::LineAndColumn,
                             message: format!("illegal rule type '{}'", ty.ty_str()),
                             note: None,
+                            suggested_replacement: None,
                         }],
                     );
                     None
@@ -856,9 +866,8 @@ impl<'ctx> Resolver<'ctx> {
         if let Some(args) = &rule_stmt.args {
             for (i, para) in args.node.args.iter().enumerate() {
                 let name = para.node.get_name();
-                let pos = para.get_pos();
-                let ty = args.node.get_arg_type(i);
-                let ty = self.parse_ty_with_scope(&ty, pos);
+                let ty = args.node.get_arg_type_node(i);
+                let ty = self.parse_ty_with_scope(ty, para.get_span_pos());
                 params.push(Parameter {
                     name,
                     ty: ty.clone(),
@@ -880,7 +889,7 @@ impl<'ctx> Resolver<'ctx> {
                             "There is a circular reference between rule {} and {}",
                             name, parent_ty.name,
                         ),
-                        rule_stmt.get_pos(),
+                        rule_stmt.get_span_pos(),
                     );
                 }
             }
@@ -890,11 +899,24 @@ impl<'ctx> Resolver<'ctx> {
             DecoratorTarget::Schema,
             &rule_stmt.name.node,
         );
+
+        let parsed_doc = parse_doc_string(
+            &rule_stmt
+                .doc
+                .as_ref()
+                .map(|doc| doc.node.clone())
+                .unwrap_or_default(),
+        );
+        let index_signature = match &protocol_ty {
+            Some(ty) => ty.index_signature.clone(),
+            None => None,
+        };
         SchemaType {
             name: rule_stmt.name.node.clone(),
             pkgpath: self.ctx.pkgpath.clone(),
             filename: self.ctx.filename.clone(),
-            doc: rule_stmt.doc.clone(),
+            doc: parsed_doc.summary.clone(),
+            examples: parsed_doc.examples,
             is_instance: false,
             is_mixin: false,
             is_protocol: false,
@@ -904,14 +926,18 @@ impl<'ctx> Resolver<'ctx> {
             mixins: parent_types,
             attrs: IndexMap::default(),
             func: Box::new(FunctionType {
-                doc: rule_stmt.doc.clone(),
+                doc: rule_stmt
+                    .doc
+                    .as_ref()
+                    .map(|doc| doc.node.clone())
+                    .unwrap_or_default(),
                 params,
                 self_ty: None,
-                return_ty: Rc::new(Type::ANY),
+                return_ty: Arc::new(Type::ANY),
                 is_variadic: false,
                 kw_only_index: None,
             }),
-            index_signature: None,
+            index_signature,
             decorators,
         }
     }

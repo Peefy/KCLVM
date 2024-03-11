@@ -1,6 +1,6 @@
 [package]
 name = "kclvm-runner"
-version = "0.5.0"
+version = "0.8.1"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -37,6 +37,7 @@ kclvm-error = {path = "../error"}
 kclvm-query = {path = "../query"}
 kclvm-utils = {path = "../utils"}
 kclvm-driver = {path = "../driver"}
+uuid = "1.7.0"
 
 [dev-dependencies]
 kclvm-parser = {path = "../parser"}

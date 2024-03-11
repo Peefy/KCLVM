@@ -1,17 +1,18 @@
 ---
 source: parser/src/tests/error_recovery.rs
+assertion_line: 239
 expression: "crate::tests::parsing_module_string(r#\"@deprecated(\nschema A:\n    a: \"#)"
 ---
 Module {
     filename: "",
     pkg: "",
-    doc: "",
+    doc: None,
     name: "",
     body: [
         Node {
             node: Schema(
                 SchemaStmt {
-                    doc: "",
+                    doc: None,
                     name: Node {
                         node: "A",
                         filename: "",
@@ -39,14 +40,6 @@ Module {
                                         end_line: 3,
                                         end_column: 5,
                                     },
-                                    type_str: Node {
-                                        node: "any",
-                                        filename: "",
-                                        line: 3,
-                                        column: 7,
-                                        end_line: 3,
-                                        end_column: 6,
-                                    },
                                     op: None,
                                     value: None,
                                     is_optional: false,
@@ -57,7 +50,7 @@ Module {
                                         line: 3,
                                         column: 7,
                                         end_line: 3,
-                                        end_column: 6,
+                                        end_column: 7,
                                     },
                                 },
                             ),
@@ -65,7 +58,7 @@ Module {
                             line: 3,
                             column: 4,
                             end_line: 3,
-                            end_column: 6,
+                            end_column: 7,
                         },
                     ],
                     decorators: [
@@ -75,7 +68,14 @@ Module {
                                     node: Identifier(
                                         Identifier {
                                             names: [
-                                                "deprecated",
+                                                Node {
+                                                    node: "deprecated",
+                                                    filename: "",
+                                                    line: 1,
+                                                    column: 1,
+                                                    end_line: 1,
+                                                    end_column: 11,
+                                                },
                                             ],
                                             pkgpath: "",
                                             ctx: Load,

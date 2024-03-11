@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use super::print_ast_module;
-use kclvm_parser::parse_file;
+use kclvm_parser::parse_file_force_errors;
 use pretty_assertions::assert_eq;
 
 const FILE_INPUT_SUFFIX: &str = ".input";
 const FILE_OUTPUT_SUFFIX: &str = ".output";
-const TEST_CASES: &[&'static str; 16] = &[
+const TEST_CASES: &[&str] = &[
     "arguments",
     "empty",
     "if_stmt",
@@ -18,6 +18,7 @@ const TEST_CASES: &[&'static str; 16] = &[
     "index_sign",
     "joined_str",
     "lambda",
+    "orelse",
     "quant",
     "rule",
     "str",
@@ -30,18 +31,18 @@ fn read_data(data_name: &str) -> (String, String) {
     filename.push(
         Path::new("src")
             .join("test_data")
-            .join(&format!("{}{}", data_name, FILE_INPUT_SUFFIX))
+            .join(format!("{}{}", data_name, FILE_INPUT_SUFFIX))
             .display()
             .to_string(),
     );
 
-    let module = parse_file(filename.to_str().unwrap(), None);
+    let module = parse_file_force_errors(filename.to_str().unwrap(), None);
 
     let mut filename_expect = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     filename_expect.push(
         Path::new("src")
             .join("test_data")
-            .join(&format!("{}{}", data_name, FILE_OUTPUT_SUFFIX))
+            .join(format!("{}{}", data_name, FILE_OUTPUT_SUFFIX))
             .display()
             .to_string(),
     );

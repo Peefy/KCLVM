@@ -1,14 +1,16 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 #![allow(clippy::missing_safety_doc)]
 
 use crate::*;
 use std::os::raw::c_char;
 
+use self::eval::LazyEvalScope;
+
 #[allow(dead_code, non_camel_case_types)]
 type kclvm_context_t = Context;
 
 #[allow(dead_code, non_camel_case_types)]
-type kclvm_error_t = KclError;
+type kclvm_eval_scope_t = LazyEvalScope;
 
 #[allow(dead_code, non_camel_case_types)]
 type kclvm_kind_t = Kind;
@@ -20,7 +22,7 @@ type kclvm_type_t = Type;
 type kclvm_value_t = Value;
 
 #[allow(dead_code, non_camel_case_types)]
-type kclvm_char_t = i8;
+type kclvm_char_t = c_char;
 
 #[allow(dead_code, non_camel_case_types)]
 type kclvm_size_t = i32;
@@ -38,30 +40,10 @@ type kclvm_float_t = f64;
 // new/delete
 // ----------------------------------------------------------------------------
 
-// singleton
-
-#[allow(non_camel_case_types, non_upper_case_globals)]
-static mut _kclvm_context_current: u64 = 0;
-
-#[no_mangle]
-#[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_current() -> *mut kclvm_context_t {
-    unsafe {
-        if _kclvm_context_current == 0 {
-            _kclvm_context_current = kclvm_context_new() as u64;
-        }
-        _kclvm_context_current as *mut kclvm_context_t
-    }
-}
-
 #[no_mangle]
 #[runtime_fn]
 pub unsafe extern "C" fn kclvm_context_new() -> *mut kclvm_context_t {
-    let p = Box::into_raw(Box::new(Context::new()));
-    unsafe {
-        _kclvm_context_current = p as u64;
-    }
-    p
+    Box::into_raw(Box::new(Context::new()))
 }
 
 #[no_mangle]
@@ -72,33 +54,7 @@ pub unsafe extern "C" fn kclvm_context_delete(p: *mut kclvm_context_t) {
         let ptr = (*o) as *mut kclvm_value_ref_t;
         kclvm_value_delete(ptr);
     }
-    unsafe {
-        //todo: remove global _kclvm_context_current
-        //set _kclvm_context_current to null to invoid internal unsoundness
-        _kclvm_context_current = 0;
-    }
     free_mut_ptr(p);
-}
-
-// ----------------------------------------------------------------------------
-// main begin/end
-// ----------------------------------------------------------------------------
-
-#[no_mangle]
-#[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_main_begin_hook(p: *mut kclvm_context_t) {
-    let p = mut_ptr_as_ref(p);
-    p.main_begin_hook();
-}
-
-#[no_mangle]
-#[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_main_end_hook(
-    p: *mut kclvm_context_t,
-    return_value: *mut kclvm_value_ref_t,
-) -> *mut kclvm_value_ref_t {
-    let p = mut_ptr_as_ref(p);
-    p.main_end_hook(return_value)
 }
 
 // ----------------------------------------------------------------------------
@@ -109,7 +65,7 @@ pub unsafe extern "C" fn kclvm_context_main_end_hook(
 #[runtime_fn]
 pub unsafe extern "C" fn kclvm_context_set_kcl_location(
     p: *mut kclvm_context_t,
-    filename: *const i8,
+    filename: *const c_char,
     line: i32,
     col: i32,
 ) {
@@ -125,7 +81,7 @@ pub unsafe extern "C" fn kclvm_context_set_kcl_location(
 #[runtime_fn]
 pub unsafe extern "C" fn kclvm_context_set_kcl_pkgpath(
     p: *mut kclvm_context_t,
-    pkgpath: *const i8,
+    pkgpath: *const c_char,
 ) {
     let p = mut_ptr_as_ref(p);
     if !pkgpath.is_null() {
@@ -135,135 +91,127 @@ pub unsafe extern "C" fn kclvm_context_set_kcl_pkgpath(
 
 #[no_mangle]
 #[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_set_kcl_filename(filename: *const i8) {
-    let p = Context::current_context_mut();
-    if !filename.is_null() {
-        p.set_kcl_filename(c2str(filename));
-    }
-}
-
-#[no_mangle]
-#[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_set_kcl_line_col(line: i32, col: i32) {
-    let p = Context::current_context_mut();
-    p.set_kcl_line_col(line, col);
-}
-
-// ----------------------------------------------------------------------------
-// manage types
-// ----------------------------------------------------------------------------
-
-#[no_mangle]
-#[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_put_type(p: *mut kclvm_context_t, typ: *const kclvm_type_t) {
-    let p = mut_ptr_as_ref(p);
-    let typ = ptr_as_ref(typ);
-
-    p.all_types.push(typ.clone());
-}
-
-#[no_mangle]
-#[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_clear_all_types(p: *mut kclvm_context_t) {
-    let p = mut_ptr_as_ref(p);
-    p.all_types.clear();
-}
-
-// ----------------------------------------------------------------------------
-// symbol
-// ----------------------------------------------------------------------------
-
-#[no_mangle]
-#[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_symbol_init(
+pub unsafe extern "C" fn kclvm_context_set_kcl_modpath(
     p: *mut kclvm_context_t,
-    n: kclvm_size_t,
-    symbol_names: *const *const kclvm_char_t,
+    module_path: *const c_char,
 ) {
     let p = mut_ptr_as_ref(p);
-
-    unsafe {
-        p.symbol_names.clear();
-        p.symbol_values.clear();
-
-        let _ = std::slice::from_raw_parts(symbol_names, n as usize)
-            .iter()
-            .map(|arg| {
-                p.symbol_names.push(c2str(*arg).to_string());
-                p.symbol_values.push(Value::default());
-            });
+    if !module_path.is_null() {
+        p.set_kcl_module_path(c2str(module_path));
     }
 }
 
 #[no_mangle]
 #[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_symbol_num(p: *const kclvm_context_t) -> kclvm_size_t {
-    let p = ptr_as_ref(p);
-
-    p.symbol_names.len() as kclvm_size_t
-}
-
-#[no_mangle]
-#[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_symbol_name(
-    p: *const kclvm_context_t,
-    i: kclvm_size_t,
-) -> *const kclvm_char_t {
-    let p = ptr_as_ref(p);
-    return match p.symbol_names.get(i as usize) {
-        Some(value) => value.as_bytes().as_ptr() as *const kclvm_char_t,
-        None => std::ptr::null(),
-    };
-}
-
-#[no_mangle]
-#[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_symbol_value(
-    p: *const kclvm_context_t,
-    i: kclvm_size_t,
-) -> *const kclvm_value_t {
-    let p = ptr_as_ref(p);
-    match p.symbol_values.get(i as usize) {
-        Some(v) => v as *const kclvm_value_t,
-        None => std::ptr::null(),
+pub unsafe extern "C" fn kclvm_context_set_kcl_workdir(
+    p: *mut kclvm_context_t,
+    workdir: *const c_char,
+) {
+    let p = mut_ptr_as_ref(p);
+    if !workdir.is_null() {
+        p.set_kcl_workdir(c2str(workdir));
     }
 }
 
-// ----------------------------------------------------------------------------
-// args
-// ----------------------------------------------------------------------------
-
 #[no_mangle]
 #[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_args_get(
-    _p: *const kclvm_context_t,
-    _key: *const kclvm_char_t,
-) -> *const kclvm_char_t {
-    //let p = ptr_as_ref(p);
-    //match p.app_args.get(c2str(key)) {
-    //    Some(value) => (*value).as_bytes().as_ptr() as *const kclvm_char_t,
-    //    None => std::ptr::null(),
-    //};
-    std::ptr::null()
-}
-
-#[no_mangle]
-#[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_args_set(
-    _p: *mut kclvm_context_t,
-    _key: *const kclvm_char_t,
-    _value: *const kclvm_char_t,
+pub unsafe extern "C" fn kclvm_context_set_kcl_filename(
+    ctx: *mut kclvm_context_t,
+    filename: *const c_char,
 ) {
-    //let p = mut_ptr_as_ref(p);
-    //p.app_args
-    //    .insert(c2str(key).to_string(), c2str(value).to_string());
+    let ctx = mut_ptr_as_ref(ctx);
+    if !filename.is_null() {
+        ctx.set_kcl_filename(c2str(filename));
+    }
 }
 
 #[no_mangle]
 #[runtime_fn]
-pub unsafe extern "C" fn kclvm_context_args_clear(p: *mut kclvm_context_t) {
-    let p = mut_ptr_as_ref(p);
-    p.app_args.clear();
+pub unsafe extern "C" fn kclvm_context_set_kcl_line_col(
+    ctx: *mut kclvm_context_t,
+    line: i32,
+    col: i32,
+) {
+    let ctx = mut_ptr_as_ref(ctx);
+    ctx.set_kcl_line_col(line, col);
+}
+
+// ----------------------------------------------------------------------------
+// Global values and evaluation scope.
+// ----------------------------------------------------------------------------
+
+#[no_mangle]
+#[runtime_fn]
+pub unsafe extern "C" fn kclvm_scope_new() -> *mut kclvm_eval_scope_t {
+    Box::into_raw(Box::new(LazyEvalScope::default()))
+}
+
+#[no_mangle]
+#[runtime_fn]
+pub unsafe extern "C" fn kclvm_scope_free(scope: *mut kclvm_eval_scope_t) {
+    drop(Box::from_raw(scope));
+}
+
+#[no_mangle]
+#[runtime_fn]
+pub unsafe extern "C" fn kclvm_scope_add_setter(
+    _ctx: *mut kclvm_context_t,
+    scope: *mut kclvm_eval_scope_t,
+    pkg: *const c_char,
+    name: *const c_char,
+    setter: *const u64,
+) {
+    let scope = mut_ptr_as_ref(scope);
+    let pkg = c2str(pkg);
+    let name = c2str(name);
+    let key = format!("{}.{}", pkg, name);
+    if !scope.setters.contains_key(&key) {
+        scope.setters.insert(key.clone(), vec![]);
+    }
+    if let Some(setters) = scope.setters.get_mut(&key) {
+        setters.push(setter as u64);
+    }
+}
+
+#[no_mangle]
+#[runtime_fn]
+pub unsafe extern "C" fn kclvm_scope_set(
+    _ctx: *mut kclvm_context_t,
+    scope: *mut kclvm_eval_scope_t,
+    pkg: *const c_char,
+    name: *const c_char,
+    value: *const kclvm_value_ref_t,
+) {
+    let scope = mut_ptr_as_ref(scope);
+    let value = ptr_as_ref(value);
+    let pkg = c2str(pkg);
+    let name = c2str(name);
+    let key = format!("{}.{}", pkg, name);
+    scope.set_value(&key, value);
+}
+
+#[no_mangle]
+#[runtime_fn]
+pub unsafe extern "C" fn kclvm_scope_get(
+    ctx: *mut kclvm_context_t,
+    scope: *mut kclvm_eval_scope_t,
+    pkg: *const c_char,
+    name: *const c_char,
+    target: *const c_char,
+    default: *const kclvm_value_ref_t,
+) -> *const kclvm_value_ref_t {
+    let ctx = mut_ptr_as_ref(ctx);
+    let scope = mut_ptr_as_ref(scope);
+    let pkg = c2str(pkg);
+    let name = c2str(name);
+    let target = format!("{}.{}", pkg, c2str(target));
+    let key = format!("{}.{}", pkg, name);
+    // Existing values or existing but not yet calculated values.
+    if scope.contains_key(&key) || scope.setters.contains_key(&key) {
+        scope.get_value(ctx, &key, &target).into_raw(ctx)
+    } else {
+        default
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -291,7 +239,7 @@ pub unsafe extern "C" fn kclvm_context_set_strict_range_check(
 #[runtime_fn]
 pub unsafe extern "C" fn kclvm_context_set_disable_none(p: *mut kclvm_context_t, v: kclvm_bool_t) {
     let p = mut_ptr_as_ref(p);
-    p.cfg.disable_none = v != 0;
+    p.plan_opts.disable_none = v != 0;
 }
 
 #[no_mangle]
@@ -329,12 +277,12 @@ pub unsafe extern "C" fn kclvm_context_invoke(
     let p = mut_ptr_as_ref(p);
     let method = c2str(method);
 
-    let args = kclvm_value_from_json(args);
-    let kwargs = kclvm_value_from_json(kwargs);
+    let args = kclvm_value_from_json(p, args);
+    let kwargs = kclvm_value_from_json(p, kwargs);
     let result = _kclvm_context_invoke(p, method, args, kwargs);
 
     p.buffer.kclvm_context_invoke_result = ptr_as_ref(result).to_json_string_with_null();
-    let result_json = p.buffer.kclvm_context_invoke_result.as_ptr() as *const i8;
+    let result_json = p.buffer.kclvm_context_invoke_result.as_ptr() as *const c_char;
 
     kclvm_value_delete(args);
     kclvm_value_delete(kwargs);
@@ -369,10 +317,11 @@ unsafe fn _kclvm_context_invoke(
 #[no_mangle]
 #[runtime_fn]
 pub unsafe extern "C" fn kclvm_context_pkgpath_is_imported(
+    ctx: *mut kclvm_context_t,
     pkgpath: *const kclvm_char_t,
 ) -> kclvm_bool_t {
     let pkgpath = c2str(pkgpath);
-    let ctx = Context::current_context_mut();
+    let ctx = mut_ptr_as_ref(ctx);
     let result = ctx.imported_pkgpath.contains(pkgpath);
     ctx.imported_pkgpath.insert(pkgpath.to_string());
     result as kclvm_bool_t

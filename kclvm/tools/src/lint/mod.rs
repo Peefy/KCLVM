@@ -4,7 +4,7 @@ use indexmap::IndexSet;
 use kclvm_error::{Diagnostic, Handler};
 use kclvm_parser::{load_program, LoadProgramOptions, ParseSession};
 use kclvm_runtime::PanicInfo;
-use kclvm_sema::resolver::resolve_program;
+use kclvm_sema::resolver::resolve_program_with_opts;
 #[cfg(test)]
 mod tests;
 
@@ -45,11 +45,18 @@ mod tests;
 ///    Diagnostic {
 ///        level: Warning
 ///        messages: [Message {
-///            pos: Position {
-///                filename: test.k,
-///                line: 1,
-///                column: None,
-///            },
+///            range: (
+///                Position {
+///                    filename: test.k,
+///                    line: 1,
+///                    column: None,
+///                },
+///                Position {
+///                    filename: test.k,
+///                    line: 1,
+///                    column: None,
+///                },
+///            ),
 ///            style: Style::Line,
 ///            message: "Module 'math' imported but unused",
 ///            note: Some("Consider removing this statement".to_string()),
@@ -64,14 +71,27 @@ pub fn lint_files(
 ) -> (IndexSet<Diagnostic>, IndexSet<Diagnostic>) {
     // Parse AST program.
     let sess = Arc::new(ParseSession::default());
-    let mut program = match load_program(sess.clone(), files, opts) {
-        Ok(p) => p,
+    let mut opts = opts.unwrap_or_default();
+    opts.load_plugins = true;
+    let mut program = match load_program(sess.clone(), files, Some(opts), None) {
+        Ok(p) => p.program,
         Err(err_str) => {
             return Handler::default()
-                .add_panic_info(&PanicInfo::from(err_str))
+                .add_panic_info(&PanicInfo::from(err_str.to_string()))
                 .classification();
         }
     };
-    sess.append_diagnostic(resolve_program(&mut program).handler.diagnostics)
-        .classification()
+    sess.append_diagnostic(
+        resolve_program_with_opts(
+            &mut program,
+            kclvm_sema::resolver::Options {
+                merge_program: false,
+                ..Default::default()
+            },
+            None,
+        )
+        .handler
+        .diagnostics,
+    )
+    .classification()
 }

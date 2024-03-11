@@ -70,6 +70,7 @@ parse_expr_snapshot! { config_recovery_11, "{if True: a = , b = 2}" }
 parse_expr_snapshot! { config_recovery_12, "{if True: *a, b = 2}" }
 parse_expr_snapshot! { config_recovery_13, "{if True: key: {}}" }
 parse_expr_snapshot! { config_recovery_14, "{if True: key: []}" }
+parse_expr_snapshot! { config_recovery_15, "{你好" }
 parse_expr_snapshot! { comp_clause_recovery_0, "[i for i in [1,2,3]]" }
 parse_expr_snapshot! { comp_clause_recovery_1, "[i, j for i in [1,2,3]]" }
 parse_expr_snapshot! { comp_clause_recovery_2, "[for i in [1,2,3]]" }
@@ -155,6 +156,14 @@ parse_expr_snapshot! { joined_string_recovery_2, r#"'${(a +}'"# }
 parse_expr_snapshot! { joined_string_recovery_3, r#"'${a'"# }
 parse_expr_snapshot! { joined_string_recovery_5, r#"'${a + 1 = }'"# }
 parse_expr_snapshot! { joined_string_recovery_6, r#"'${a: json}'"# }
+parse_expr_snapshot! { joined_string_recovery_7, r#"'\n${a: #json}'"# }
+parse_expr_snapshot! { joined_string_recovery_8, r#"'a\nb${a: #json}\n'"# }
+parse_expr_snapshot! { lambda_recovery_0, r#"lambda"# }
+parse_expr_snapshot! { lambda_recovery_1, r#"lambda {"# }
+parse_expr_snapshot! { lambda_recovery_2, r#"lambda {}"# }
+parse_expr_snapshot! { lambda_recovery_3, r#"{lambda}"# }
+parse_expr_snapshot! { lambda_recovery_4, r#"{lambda{}"# }
+parse_expr_snapshot! { lambda_recovery_5, r#"{lambda a{}"# }
 
 /* Stmt error recovery */
 
@@ -194,6 +203,11 @@ parse_module_snapshot! { if_stmt_recovery_3, r#"if True: a = 1 else b = 2"#}
 parse_module_snapshot! { if_stmt_recovery_4, r#"if True: else: b = 2"#}
 parse_module_snapshot! { if_stmt_recovery_5, r#"if"#}
 parse_module_snapshot! { if_stmt_recovery_6, r#"if else"#}
+parse_module_snapshot! { if_stmt_recovery_7, r#"if True:"#}
+parse_module_snapshot! { if_stmt_recovery_8, r#"if True: a = 1
+else if False: b = 1"#}
+parse_module_snapshot! { if_stmt_recovery_9, r#"if True: a = 1
+else False: b = 1"#}
 parse_module_snapshot! { schema_stmt_recovery_0, r#"schema"#}
 parse_module_snapshot! { schema_stmt_recovery_1, r#"schema A"#}
 parse_module_snapshot! { schema_stmt_recovery_2, r#"schema A["#}
@@ -264,6 +278,19 @@ parse_module_snapshot! { schema_stmt_recovery_31, r#"
 schema A:
     [str]: str
     [str]: int"#}
+parse_module_snapshot! { schema_stmt_recovery_32, r#"
+schema A:
+    "attr": str"#}
+parse_module_snapshot! { schema_stmt_recovery_33, r#"
+schema A:
+    """Schema Doc"""
+    "attr": str"#}
+parse_module_snapshot! { schema_stmt_recovery_34, r#"
+schema A:
+    "attr: str"#}
+parse_module_snapshot! { schema_stmt_recovery_35, r#"
+schema A:
+    "attr":"#}
 parse_module_snapshot! { rule_stmt_recovery_0, r#"rule"#}
 parse_module_snapshot! { rule_stmt_recovery_1, r#"rule A"#}
 parse_module_snapshot! { rule_stmt_recovery_2, r#"rule A["#}
@@ -277,3 +304,28 @@ parse_module_snapshot! { rule_stmt_recovery_7, r#"
 rule A:
     @
 "#}
+parse_module_snapshot! { fn_ty_annotation_recovery_0, r#"a:("#}
+parse_module_snapshot! { fn_ty_annotation_recovery_1, r#"a:(i"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_2, r#"a:(int"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_3, r#"a:i)"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_4, r#"a:([i"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_5, r#"a:([i:"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_6, r#"a:([i]"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_7, r#"a:([int]"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_8, r#"a:([int"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_9, r#"a:({}"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_10, r#"a:({"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_11, r#"a:({i"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_12, r#"a:({i:"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_13, r#"a:({i:i"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_14, r#"a:({i:int"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_15, r#"a:({i:int]"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_16, r#"a:({str:int]"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_17, r#"a:({str:int}"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_18, r#"a:({str:int} ->"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_19, r#"a:({str:int}) -> i"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_20, r#"a:(str|int) -> i"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_21, r#"a:(str|int, int) -> i"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_22, r#"a:(str|int, int|"#}
+parse_module_snapshot! { fn_ty_annotation_recovery_23, r#"a:(str|int, int|) ->"#}
+parse_module_snapshot! { import_recovery_0, r#"import json as j.a"#}

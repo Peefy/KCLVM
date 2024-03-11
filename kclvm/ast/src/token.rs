@@ -4,7 +4,6 @@
 //! Including indent and dedent tokens.
 //! Not Include some tokens of low level tokens, such as ';', '..', '..=', '<-'.
 pub use BinCmpToken::*;
-pub use BinCmpToken::*;
 pub use BinOpToken::*;
 pub use DelimToken::*;
 pub use LitKind::*;
@@ -12,7 +11,8 @@ pub use TokenKind::*;
 pub use UnaryOpToken::*;
 
 use compiler_base_span::{Span, DUMMY_SP};
-use kclvm_span::symbol::{Ident, Symbol};
+pub use kclvm_span::symbol::{Ident, Symbol};
+pub const VALID_SPACES_LENGTH: usize = 0;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum CommentKind {
@@ -180,10 +180,10 @@ pub enum TokenKind {
     DocComment(CommentKind),
 
     /// '\t' or ' '
-    Indent,
+    Indent(usize),
 
     /// Remove an indent
-    Dedent,
+    Dedent(usize),
 
     /// '\n'
     Newline,
@@ -280,8 +280,8 @@ impl From<TokenKind> for String {
             DocComment(kind) => match kind {
                 CommentKind::Line(_) => "inline_comment",
             },
-            Indent => "indent",
-            Dedent => "dedent",
+            Indent(_) => "indent",
+            Dedent(_) => "dedent",
             Newline => "newline",
             Dummy => "dummy",
             Eof => "eof",
@@ -334,11 +334,34 @@ impl Token {
         self.run_on_ident(|id| id.name == kw)
     }
 
+    /// Whether the token is a string literal token.
+    pub fn is_string_lit(&self) -> bool {
+        match self.kind {
+            TokenKind::Literal(lit) => {
+                if let LitKind::Str { .. } = lit.kind {
+                    true
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    }
+
     fn run_on_ident(&self, pred: impl FnOnce(Ident) -> bool) -> bool {
         match self.ident() {
             Some(id) => pred(id),
             _ => false,
         }
+    }
+
+    /// Whether the token kind is in the recovery token set, when meets errors, drop it.
+    #[inline]
+    pub fn is_in_recovery_set(&self) -> bool {
+        matches!(
+            self.kind,
+            TokenKind::Indent(VALID_SPACES_LENGTH) | TokenKind::Dummy
+        )
     }
 }
 

@@ -1,4 +1,4 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 use anyhow::{Context, Result};
 use serde::{
     de::{DeserializeSeed, Error, MapAccess, SeqAccess, Unexpected, Visitor},
@@ -60,8 +60,11 @@ pub struct Config {
     pub verbose: Option<u32>,
     pub debug: Option<bool>,
     pub sort_keys: Option<bool>,
-    // kclvm needs a mapping between the package name and the package path
-    // to determine the source code path corresponding to different version package.
+    pub show_hidden: Option<bool>,
+    /// Whether including schema type in JSON/YAML result.
+    pub include_schema_type_path: Option<bool>,
+    /// kcl needs a mapping between the package name and the package path
+    /// to determine the source code path corresponding to different version package.
     pub package_maps: Option<HashMap<String, String>>,
 }
 
@@ -79,6 +82,8 @@ impl SettingsFile {
                 verbose: Some(0),
                 debug: Some(false),
                 sort_keys: Some(false),
+                show_hidden: Some(false),
+                include_schema_type_path: Some(false),
                 package_maps: Some(HashMap::default()),
             }),
             kcl_options: Some(vec![]),
@@ -378,6 +383,12 @@ pub fn merge_settings(settings: &[SettingsFile]) -> SettingsFile {
                 set_if!(result_kcl_cli_configs, verbose, kcl_cli_configs);
                 set_if!(result_kcl_cli_configs, debug, kcl_cli_configs);
                 set_if!(result_kcl_cli_configs, sort_keys, kcl_cli_configs);
+                set_if!(result_kcl_cli_configs, show_hidden, kcl_cli_configs);
+                set_if!(
+                    result_kcl_cli_configs,
+                    include_schema_type_path,
+                    kcl_cli_configs
+                );
                 set_if!(result_kcl_cli_configs, package_maps, kcl_cli_configs);
             }
         }
@@ -393,69 +404,6 @@ pub fn merge_settings(settings: &[SettingsFile]) -> SettingsFile {
         }
     }
     result
-}
-
-#[cfg(test)]
-mod settings_test {
-    use crate::settings::*;
-
-    const SETTINGS_FILE: &str = "./src/testdata/settings.yaml";
-
-    #[test]
-    fn test_settings_load_file() {
-        let settings = load_file(SETTINGS_FILE).unwrap();
-        assert!(settings.kcl_cli_configs.is_some());
-        assert!(settings.kcl_options.is_some());
-        if let Some(kcl_cli_configs) = settings.kcl_cli_configs {
-            let files = vec![
-                String::from("../main.k"),
-                String::from("./before/base.k"),
-                String::from("./main.k"),
-                String::from("./sub/sub.k"),
-            ];
-            assert!(kcl_cli_configs.files.is_some());
-            assert!(kcl_cli_configs.disable_none.is_some());
-            assert!(kcl_cli_configs.strict_range_check.is_some());
-            assert!(kcl_cli_configs.debug.is_some());
-            assert!(kcl_cli_configs.path_selector.is_none());
-            assert!(kcl_cli_configs.overrides.is_none());
-            assert_eq!(kcl_cli_configs.sort_keys, Some(true));
-            if let Some(config_files) = kcl_cli_configs.files {
-                assert!(config_files == files);
-            }
-        }
-        if let Some(kcl_options) = settings.kcl_options {
-            assert!(kcl_options.len() == 6);
-        }
-    }
-
-    #[test]
-    fn test_merge_settings() -> anyhow::Result<()> {
-        let settings1 = load_file(SETTINGS_FILE)?;
-        let settings2 = load_file(SETTINGS_FILE)?;
-        let settings = merge_settings(&vec![settings1, settings2]);
-        if let Some(kcl_cli_configs) = settings.kcl_cli_configs {
-            let files = vec![
-                String::from("../main.k"),
-                String::from("./before/base.k"),
-                String::from("./main.k"),
-                String::from("./sub/sub.k"),
-            ];
-            assert!(kcl_cli_configs.files.is_some());
-            assert!(kcl_cli_configs.disable_none.is_some());
-            assert!(kcl_cli_configs.strict_range_check.is_some());
-            assert!(kcl_cli_configs.debug.is_some());
-            assert!(kcl_cli_configs.path_selector.is_some());
-            assert!(kcl_cli_configs.overrides.is_some());
-            if let Some(config_files) = kcl_cli_configs.files {
-                assert!(config_files == files);
-            }
-        }
-        if let Some(kcl_options) = settings.kcl_options {
-            assert!(kcl_options.len() == 12);
-        }
-        Ok(())
-    }
 }
 
 /// Build SettingsPathBuf from args.
@@ -505,4 +453,69 @@ pub fn build_settings_pathbuf(
         }
     }
     Ok(SettingsPathBuf::new(path, settings))
+}
+
+#[cfg(test)]
+mod settings_test {
+    use crate::settings::*;
+
+    const SETTINGS_FILE: &str = "./src/testdata/settings.yaml";
+
+    #[test]
+    fn test_settings_load_file() {
+        let settings = load_file(SETTINGS_FILE).unwrap();
+        assert!(settings.kcl_cli_configs.is_some());
+        assert!(settings.kcl_options.is_some());
+        if let Some(kcl_cli_configs) = settings.kcl_cli_configs {
+            let files = vec![
+                String::from("../main.k"),
+                String::from("./before/base.k"),
+                String::from("./main.k"),
+                String::from("./sub/sub.k"),
+            ];
+            assert!(kcl_cli_configs.files.is_some());
+            assert!(kcl_cli_configs.disable_none.is_some());
+            assert!(kcl_cli_configs.strict_range_check.is_some());
+            assert!(kcl_cli_configs.debug.is_some());
+            assert!(kcl_cli_configs.path_selector.is_none());
+            assert!(kcl_cli_configs.overrides.is_none());
+            assert!(kcl_cli_configs.include_schema_type_path.is_none());
+            assert!(kcl_cli_configs.show_hidden.is_none());
+            assert_eq!(kcl_cli_configs.sort_keys, Some(true));
+            if let Some(config_files) = kcl_cli_configs.files {
+                assert!(config_files == files);
+            }
+        }
+        if let Some(kcl_options) = settings.kcl_options {
+            assert!(kcl_options.len() == 6);
+        }
+    }
+
+    #[test]
+    fn test_merge_settings() -> anyhow::Result<()> {
+        let settings1 = load_file(SETTINGS_FILE)?;
+        let settings2 = load_file(SETTINGS_FILE)?;
+        let settings = merge_settings(&vec![settings1, settings2]);
+        if let Some(kcl_cli_configs) = settings.kcl_cli_configs {
+            let files = vec![
+                String::from("../main.k"),
+                String::from("./before/base.k"),
+                String::from("./main.k"),
+                String::from("./sub/sub.k"),
+            ];
+            assert!(kcl_cli_configs.files.is_some());
+            assert!(kcl_cli_configs.disable_none.is_some());
+            assert!(kcl_cli_configs.strict_range_check.is_some());
+            assert!(kcl_cli_configs.debug.is_some());
+            assert!(kcl_cli_configs.path_selector.is_some());
+            assert!(kcl_cli_configs.overrides.is_some());
+            if let Some(config_files) = kcl_cli_configs.files {
+                assert!(config_files == files);
+            }
+        }
+        if let Some(kcl_options) = settings.kcl_options {
+            assert!(kcl_options.len() == 12);
+        }
+        Ok(())
+    }
 }

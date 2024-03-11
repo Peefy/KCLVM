@@ -1,11 +1,12 @@
 ---
 source: parser/src/tests/error_recovery.rs
+assertion_line: 201
 expression: "crate::tests::parsing_module_string(r#\"if : a = 1\"#)"
 ---
 Module {
     filename: "",
     pkg: "",
-    doc: "",
+    doc: None,
     name: "",
     body: [
         Node {
@@ -19,7 +20,14 @@ Module {
                                         Node {
                                             node: Identifier {
                                                 names: [
-                                                    "a",
+                                                    Node {
+                                                        node: "a",
+                                                        filename: "",
+                                                        line: 1,
+                                                        column: 5,
+                                                        end_line: 1,
+                                                        end_column: 6,
+                                                    },
                                                 ],
                                                 pkgpath: "",
                                                 ctx: Store,
@@ -46,7 +54,6 @@ Module {
                                         end_line: 1,
                                         end_column: 10,
                                     },
-                                    type_annotation: None,
                                     ty: None,
                                 },
                             ),

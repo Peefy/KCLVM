@@ -1,4 +1,4 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 
 use crate::*;
 
@@ -81,6 +81,18 @@ impl ValueRef {
     pub fn arg_i_int(&self, i: usize, default: Option<i64>) -> Option<i64> {
         if let Some(x) = self.arg_i(i) {
             match *x.rc.borrow() {
+                Value::int_value(v) => return Some(v),
+                Value::none => return default,
+                _ => return None,
+            }
+        }
+        default
+    }
+
+    pub fn arg_i_int_or_bool(&self, i: usize, default: Option<i64>) -> Option<i64> {
+        if let Some(x) = self.arg_i(i) {
+            match *x.rc.borrow() {
+                Value::bool_value(v) => return Some(v as i64),
                 Value::int_value(v) => return Some(v),
                 Value::none => return default,
                 _ => return None,

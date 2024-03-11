@@ -1,18 +1,17 @@
 ---
 source: parser/src/tests/error_recovery.rs
-assertion_line: 254
 expression: "crate::tests::parsing_module_string(r#\"\nschema A:\n    @\"#)"
 ---
 Module {
     filename: "",
     pkg: "",
-    doc: "",
+    doc: None,
     name: "",
     body: [
         Node {
             node: Schema(
                 SchemaStmt {
-                    doc: "",
+                    doc: None,
                     name: Node {
                         node: "A",
                         filename: "",
@@ -34,14 +33,6 @@ Module {
                                     doc: "",
                                     name: Node {
                                         node: "",
-                                        filename: "",
-                                        line: 3,
-                                        column: 5,
-                                        end_line: 3,
-                                        end_column: 5,
-                                    },
-                                    type_str: Node {
-                                        node: "any",
                                         filename: "",
                                         line: 3,
                                         column: 5,
@@ -77,8 +68,8 @@ Module {
             filename: "",
             line: 2,
             column: 0,
-            end_line: 3,
-            end_column: 5,
+            end_line: 4,
+            end_column: 0,
         },
     ],
     comments: [],

@@ -1,4 +1,4 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+// Copyright The KCL Authors. All rights reserved.
 
 // Auto generated, DONOT EDIT!!!
 
@@ -8,10 +8,6 @@ pub fn _kclvm_get_fn_ptr_by_name(name: &str) -> u64 {
         "kclvm_assert" => crate::kclvm_assert as *const () as u64,
         "kclvm_base64_decode" => crate::kclvm_base64_decode as *const () as u64,
         "kclvm_base64_encode" => crate::kclvm_base64_encode as *const () as u64,
-        "kclvm_buffer_data" => crate::kclvm_buffer_data as *const () as u64,
-        "kclvm_buffer_delete" => crate::kclvm_buffer_delete as *const () as u64,
-        "kclvm_buffer_new" => crate::kclvm_buffer_new as *const () as u64,
-        "kclvm_buffer_size" => crate::kclvm_buffer_size as *const () as u64,
         "kclvm_builtin_abs" => crate::kclvm_builtin_abs as *const () as u64,
         "kclvm_builtin_all_true" => crate::kclvm_builtin_all_true as *const () as u64,
         "kclvm_builtin_any_true" => crate::kclvm_builtin_any_true as *const () as u64,
@@ -75,20 +71,12 @@ pub fn _kclvm_get_fn_ptr_by_name(name: &str) -> u64 {
         "kclvm_builtin_typeof" => crate::kclvm_builtin_typeof as *const () as u64,
         "kclvm_builtin_zip" => crate::kclvm_builtin_zip as *const () as u64,
         "kclvm_config_attr_map" => crate::kclvm_config_attr_map as *const () as u64,
-        "kclvm_context_args_clear" => crate::kclvm_context_args_clear as *const () as u64,
-        "kclvm_context_args_get" => crate::kclvm_context_args_get as *const () as u64,
-        "kclvm_context_args_set" => crate::kclvm_context_args_set as *const () as u64,
-        "kclvm_context_clear_all_types" => crate::kclvm_context_clear_all_types as *const () as u64,
-        "kclvm_context_current" => crate::kclvm_context_current as *const () as u64,
         "kclvm_context_delete" => crate::kclvm_context_delete as *const () as u64,
         "kclvm_context_invoke" => crate::kclvm_context_invoke as *const () as u64,
-        "kclvm_context_main_begin_hook" => crate::kclvm_context_main_begin_hook as *const () as u64,
-        "kclvm_context_main_end_hook" => crate::kclvm_context_main_end_hook as *const () as u64,
         "kclvm_context_new" => crate::kclvm_context_new as *const () as u64,
         "kclvm_context_pkgpath_is_imported" => {
             crate::kclvm_context_pkgpath_is_imported as *const () as u64
         }
-        "kclvm_context_put_type" => crate::kclvm_context_put_type as *const () as u64,
         "kclvm_context_set_debug_mode" => crate::kclvm_context_set_debug_mode as *const () as u64,
         "kclvm_context_set_disable_none" => {
             crate::kclvm_context_set_disable_none as *const () as u64
@@ -108,26 +96,26 @@ pub fn _kclvm_get_fn_ptr_by_name(name: &str) -> u64 {
         "kclvm_context_set_kcl_location" => {
             crate::kclvm_context_set_kcl_location as *const () as u64
         }
+        "kclvm_context_set_kcl_modpath" => crate::kclvm_context_set_kcl_modpath as *const () as u64,
         "kclvm_context_set_kcl_pkgpath" => crate::kclvm_context_set_kcl_pkgpath as *const () as u64,
+        "kclvm_context_set_kcl_workdir" => crate::kclvm_context_set_kcl_workdir as *const () as u64,
         "kclvm_context_set_list_option_mode" => {
             crate::kclvm_context_set_list_option_mode as *const () as u64
         }
         "kclvm_context_set_strict_range_check" => {
             crate::kclvm_context_set_strict_range_check as *const () as u64
         }
-        "kclvm_context_symbol_init" => crate::kclvm_context_symbol_init as *const () as u64,
-        "kclvm_context_symbol_name" => crate::kclvm_context_symbol_name as *const () as u64,
-        "kclvm_context_symbol_num" => crate::kclvm_context_symbol_num as *const () as u64,
-        "kclvm_context_symbol_value" => crate::kclvm_context_symbol_value as *const () as u64,
         "kclvm_convert_collection_value" => {
             crate::kclvm_convert_collection_value as *const () as u64
         }
+        "kclvm_crypto_filesha256" => crate::kclvm_crypto_filesha256 as *const () as u64,
         "kclvm_crypto_md5" => crate::kclvm_crypto_md5 as *const () as u64,
         "kclvm_crypto_sha1" => crate::kclvm_crypto_sha1 as *const () as u64,
         "kclvm_crypto_sha224" => crate::kclvm_crypto_sha224 as *const () as u64,
         "kclvm_crypto_sha256" => crate::kclvm_crypto_sha256 as *const () as u64,
         "kclvm_crypto_sha384" => crate::kclvm_crypto_sha384 as *const () as u64,
         "kclvm_crypto_sha512" => crate::kclvm_crypto_sha512 as *const () as u64,
+        "kclvm_crypto_uuid" => crate::kclvm_crypto_uuid as *const () as u64,
         "kclvm_datetime_date" => crate::kclvm_datetime_date as *const () as u64,
         "kclvm_datetime_now" => crate::kclvm_datetime_now as *const () as u64,
         "kclvm_datetime_ticks" => crate::kclvm_datetime_ticks as *const () as u64,
@@ -147,6 +135,7 @@ pub fn _kclvm_get_fn_ptr_by_name(name: &str) -> u64 {
         "kclvm_dict_insert" => crate::kclvm_dict_insert as *const () as u64,
         "kclvm_dict_insert_unpack" => crate::kclvm_dict_insert_unpack as *const () as u64,
         "kclvm_dict_insert_value" => crate::kclvm_dict_insert_value as *const () as u64,
+        "kclvm_dict_is_override_attr" => crate::kclvm_dict_is_override_attr as *const () as u64,
         "kclvm_dict_keys" => crate::kclvm_dict_keys as *const () as u64,
         "kclvm_dict_len" => crate::kclvm_dict_len as *const () as u64,
         "kclvm_dict_merge" => crate::kclvm_dict_merge as *const () as u64,
@@ -156,7 +145,10 @@ pub fn _kclvm_get_fn_ptr_by_name(name: &str) -> u64 {
         "kclvm_dict_update" => crate::kclvm_dict_update as *const () as u64,
         "kclvm_dict_update_key_value" => crate::kclvm_dict_update_key_value as *const () as u64,
         "kclvm_dict_values" => crate::kclvm_dict_values as *const () as u64,
-        "kclvm_free" => crate::kclvm_free as *const () as u64,
+        "kclvm_file_glob" => crate::kclvm_file_glob as *const () as u64,
+        "kclvm_file_modpath" => crate::kclvm_file_modpath as *const () as u64,
+        "kclvm_file_read" => crate::kclvm_file_read as *const () as u64,
+        "kclvm_file_workdir" => crate::kclvm_file_workdir as *const () as u64,
         "kclvm_iterator_cur_key" => crate::kclvm_iterator_cur_key as *const () as u64,
         "kclvm_iterator_cur_value" => crate::kclvm_iterator_cur_value as *const () as u64,
         "kclvm_iterator_delete" => crate::kclvm_iterator_delete as *const () as u64,
@@ -165,6 +157,7 @@ pub fn _kclvm_get_fn_ptr_by_name(name: &str) -> u64 {
         "kclvm_json_decode" => crate::kclvm_json_decode as *const () as u64,
         "kclvm_json_dump_to_file" => crate::kclvm_json_dump_to_file as *const () as u64,
         "kclvm_json_encode" => crate::kclvm_json_encode as *const () as u64,
+        "kclvm_json_validate" => crate::kclvm_json_validate as *const () as u64,
         "kclvm_list_append" => crate::kclvm_list_append as *const () as u64,
         "kclvm_list_append_bool" => crate::kclvm_list_append_bool as *const () as u64,
         "kclvm_list_append_float" => crate::kclvm_list_append_float as *const () as u64,
@@ -183,7 +176,6 @@ pub fn _kclvm_get_fn_ptr_by_name(name: &str) -> u64 {
         "kclvm_list_remove_at" => crate::kclvm_list_remove_at as *const () as u64,
         "kclvm_list_resize" => crate::kclvm_list_resize as *const () as u64,
         "kclvm_list_set" => crate::kclvm_list_set as *const () as u64,
-        "kclvm_malloc" => crate::kclvm_malloc as *const () as u64,
         "kclvm_manifests_yaml_stream" => crate::kclvm_manifests_yaml_stream as *const () as u64,
         "kclvm_math_ceil" => crate::kclvm_math_ceil as *const () as u64,
         "kclvm_math_exp" => crate::kclvm_math_exp as *const () as u64,
@@ -245,27 +237,11 @@ pub fn _kclvm_get_fn_ptr_by_name(name: &str) -> u64 {
         "kclvm_schema_optional_check" => crate::kclvm_schema_optional_check as *const () as u64,
         "kclvm_schema_value_check" => crate::kclvm_schema_value_check as *const () as u64,
         "kclvm_schema_value_new" => crate::kclvm_schema_value_new as *const () as u64,
-        "kclvm_strlen" => crate::kclvm_strlen as *const () as u64,
-        "kclvm_testing_arguments" => crate::kclvm_testing_arguments as *const () as u64,
-        "kclvm_testing_setting_file" => crate::kclvm_testing_setting_file as *const () as u64,
-        "kclvm_type_BoolLit_value" => crate::kclvm_type_BoolLit_value as *const () as u64,
-        "kclvm_type_FloatLit_value" => crate::kclvm_type_FloatLit_value as *const () as u64,
-        "kclvm_type_IntLit_value" => crate::kclvm_type_IntLit_value as *const () as u64,
-        "kclvm_type_StrLit_value" => crate::kclvm_type_StrLit_value as *const () as u64,
-        "kclvm_type_arg_num" => crate::kclvm_type_arg_num as *const () as u64,
-        "kclvm_type_arg_type" => crate::kclvm_type_arg_type as *const () as u64,
-        "kclvm_type_delete" => crate::kclvm_type_delete as *const () as u64,
-        "kclvm_type_elem_type" => crate::kclvm_type_elem_type as *const () as u64,
-        "kclvm_type_key_type" => crate::kclvm_type_key_type as *const () as u64,
-        "kclvm_type_kind" => crate::kclvm_type_kind as *const () as u64,
-        "kclvm_type_return_type" => crate::kclvm_type_return_type as *const () as u64,
-        "kclvm_type_schema_field_name" => crate::kclvm_type_schema_field_name as *const () as u64,
-        "kclvm_type_schema_field_num" => crate::kclvm_type_schema_field_num as *const () as u64,
-        "kclvm_type_schema_field_type" => crate::kclvm_type_schema_field_type as *const () as u64,
-        "kclvm_type_schema_name" => crate::kclvm_type_schema_name as *const () as u64,
-        "kclvm_type_schema_parent_name" => crate::kclvm_type_schema_parent_name as *const () as u64,
-        "kclvm_type_schema_relaxed" => crate::kclvm_type_schema_relaxed as *const () as u64,
-        "kclvm_type_str" => crate::kclvm_type_str as *const () as u64,
+        "kclvm_scope_add_setter" => crate::kclvm_scope_add_setter as *const () as u64,
+        "kclvm_scope_free" => crate::kclvm_scope_free as *const () as u64,
+        "kclvm_scope_get" => crate::kclvm_scope_get as *const () as u64,
+        "kclvm_scope_new" => crate::kclvm_scope_new as *const () as u64,
+        "kclvm_scope_set" => crate::kclvm_scope_set as *const () as u64,
         "kclvm_units_to_G" => crate::kclvm_units_to_G as *const () as u64,
         "kclvm_units_to_Gi" => crate::kclvm_units_to_Gi as *const () as u64,
         "kclvm_units_to_K" => crate::kclvm_units_to_K as *const () as u64,
@@ -280,28 +256,22 @@ pub fn _kclvm_get_fn_ptr_by_name(name: &str) -> u64 {
         "kclvm_units_to_n" => crate::kclvm_units_to_n as *const () as u64,
         "kclvm_units_to_u" => crate::kclvm_units_to_u as *const () as u64,
         "kclvm_value_Bool" => crate::kclvm_value_Bool as *const () as u64,
-        "kclvm_value_Bool_ptr" => crate::kclvm_value_Bool_ptr as *const () as u64,
         "kclvm_value_Decorator" => crate::kclvm_value_Decorator as *const () as u64,
         "kclvm_value_Dict" => crate::kclvm_value_Dict as *const () as u64,
         "kclvm_value_False" => crate::kclvm_value_False as *const () as u64,
         "kclvm_value_Float" => crate::kclvm_value_Float as *const () as u64,
-        "kclvm_value_Float_ptr" => crate::kclvm_value_Float_ptr as *const () as u64,
         "kclvm_value_Function" => crate::kclvm_value_Function as *const () as u64,
         "kclvm_value_Function_using_ptr" => {
             crate::kclvm_value_Function_using_ptr as *const () as u64
         }
         "kclvm_value_Int" => crate::kclvm_value_Int as *const () as u64,
-        "kclvm_value_Int_ptr" => crate::kclvm_value_Int_ptr as *const () as u64,
         "kclvm_value_List" => crate::kclvm_value_List as *const () as u64,
         "kclvm_value_List10" => crate::kclvm_value_List10 as *const () as u64,
         "kclvm_value_List6" => crate::kclvm_value_List6 as *const () as u64,
-        "kclvm_value_ListN" => crate::kclvm_value_ListN as *const () as u64,
         "kclvm_value_None" => crate::kclvm_value_None as *const () as u64,
         "kclvm_value_Schema" => crate::kclvm_value_Schema as *const () as u64,
         "kclvm_value_Str" => crate::kclvm_value_Str as *const () as u64,
-        "kclvm_value_Str_len" => crate::kclvm_value_Str_len as *const () as u64,
         "kclvm_value_Str_ptr" => crate::kclvm_value_Str_ptr as *const () as u64,
-        "kclvm_value_Str_resize" => crate::kclvm_value_Str_resize as *const () as u64,
         "kclvm_value_True" => crate::kclvm_value_True as *const () as u64,
         "kclvm_value_Undefined" => crate::kclvm_value_Undefined as *const () as u64,
         "kclvm_value_Unit" => crate::kclvm_value_Unit as *const () as u64,
@@ -322,23 +292,13 @@ pub fn _kclvm_get_fn_ptr_by_name(name: &str) -> u64 {
         "kclvm_value_deep_copy" => crate::kclvm_value_deep_copy as *const () as u64,
         "kclvm_value_delete" => crate::kclvm_value_delete as *const () as u64,
         "kclvm_value_from_json" => crate::kclvm_value_from_json as *const () as u64,
-        "kclvm_value_function_external_invoke" => {
-            crate::kclvm_value_function_external_invoke as *const () as u64
-        }
-        "kclvm_value_function_get_closure" => {
-            crate::kclvm_value_function_get_closure as *const () as u64
-        }
         "kclvm_value_function_invoke" => crate::kclvm_value_function_invoke as *const () as u64,
-        "kclvm_value_function_is_external" => {
-            crate::kclvm_value_function_is_external as *const () as u64
-        }
         "kclvm_value_function_ptr" => crate::kclvm_value_function_ptr as *const () as u64,
         "kclvm_value_in" => crate::kclvm_value_in as *const () as u64,
         "kclvm_value_is" => crate::kclvm_value_is as *const () as u64,
         "kclvm_value_is_not" => crate::kclvm_value_is_not as *const () as u64,
         "kclvm_value_is_truthy" => crate::kclvm_value_is_truthy as *const () as u64,
         "kclvm_value_iter" => crate::kclvm_value_iter as *const () as u64,
-        "kclvm_value_kind" => crate::kclvm_value_kind as *const () as u64,
         "kclvm_value_len" => crate::kclvm_value_len as *const () as u64,
         "kclvm_value_load_attr" => crate::kclvm_value_load_attr as *const () as u64,
         "kclvm_value_load_attr_option" => crate::kclvm_value_load_attr_option as *const () as u64,
@@ -380,7 +340,6 @@ pub fn _kclvm_get_fn_ptr_by_name(name: &str) -> u64 {
         "kclvm_value_slice_option" => crate::kclvm_value_slice_option as *const () as u64,
         "kclvm_value_subscr" => crate::kclvm_value_subscr as *const () as u64,
         "kclvm_value_subscr_option" => crate::kclvm_value_subscr_option as *const () as u64,
-        "kclvm_value_to_json" => crate::kclvm_value_to_json as *const () as u64,
         "kclvm_value_to_json_value" => crate::kclvm_value_to_json_value as *const () as u64,
         "kclvm_value_to_json_value_with_null" => {
             crate::kclvm_value_to_json_value_with_null as *const () as u64
@@ -394,8 +353,12 @@ pub fn _kclvm_get_fn_ptr_by_name(name: &str) -> u64 {
         "kclvm_value_union" => crate::kclvm_value_union as *const () as u64,
         "kclvm_value_union_all" => crate::kclvm_value_union_all as *const () as u64,
         "kclvm_yaml_decode" => crate::kclvm_yaml_decode as *const () as u64,
+        "kclvm_yaml_decode_all" => crate::kclvm_yaml_decode_all as *const () as u64,
+        "kclvm_yaml_dump_all_to_file" => crate::kclvm_yaml_dump_all_to_file as *const () as u64,
         "kclvm_yaml_dump_to_file" => crate::kclvm_yaml_dump_to_file as *const () as u64,
         "kclvm_yaml_encode" => crate::kclvm_yaml_encode as *const () as u64,
+        "kclvm_yaml_encode_all" => crate::kclvm_yaml_encode_all as *const () as u64,
+        "kclvm_yaml_validate" => crate::kclvm_yaml_validate as *const () as u64,
         _ => panic!("unknown {name}"),
     }
 }

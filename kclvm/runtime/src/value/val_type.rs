@@ -1,4 +1,4 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 
 extern crate fancy_regex;
 
@@ -64,24 +64,17 @@ impl ValueRef {
 }
 
 /// Use the schema instance to build a new schema instance using the schema construct function
-pub fn resolve_schema(schema: &ValueRef, keys: &[String]) -> ValueRef {
+pub fn resolve_schema(ctx: &mut Context, schema: &ValueRef, keys: &[String]) -> ValueRef {
     if !schema.is_schema() {
         return schema.clone();
     }
     let schema_value = schema.as_schema();
     let schema_type_name = schema_runtime_type(&schema_value.name, &schema_value.pkgpath);
-    let ctx = Context::current_context_mut();
     let now_meta_info = ctx.panic_info.clone();
-    let has_schema_type = {
-        let all_schemas = ctx.all_schemas.borrow_mut();
-        all_schemas.contains_key(&schema_type_name)
-    };
+    let has_schema_type = { ctx.all_schemas.contains_key(&schema_type_name) };
     if has_schema_type {
-        let schema_type = {
-            let all_schemas = ctx.all_schemas.borrow_mut();
-            all_schemas.get(&schema_type_name).unwrap().clone()
-        };
-        let schema_type = schema_type.as_function();
+        let schema_type = { ctx.all_schemas.get(&schema_type_name).unwrap().clone() };
+        let schema_type = schema_type.func.as_function();
         let schema_fn_ptr = schema_type.fn_ptr;
         let keys = keys.iter().map(|v| v.as_str()).collect();
         let config = schema.dict_get_entries(keys);
@@ -94,54 +87,59 @@ pub fn resolve_schema(schema: &ValueRef, keys: &[String]) -> ValueRef {
         let config_meta_new = config_meta.clone();
         let value = unsafe {
             let schema_fn: SchemaTypeFunc = transmute_copy(&schema_fn_ptr);
-            let ctx = kclvm_context_current();
-            let cal_map = kclvm_value_Dict();
-            let list = kclvm_value_List();
+            let cal_map = kclvm_value_Dict(ctx as *mut Context);
+            let list = schema_value.args.clone().into_raw(ctx);
             // Schema function closures
             // is sub schema
-            kclvm_list_append(list, ValueRef::bool(false).into_raw());
+            kclvm_list_append(list, ValueRef::bool(false).into_raw(ctx));
             // config meta
-            kclvm_list_append(list, config_meta.into_raw());
+            kclvm_list_append(list, config_meta.into_raw(ctx));
             // schema
-            kclvm_list_append(list, config.into_raw());
+            kclvm_list_append(list, config.into_raw(ctx));
             // config
-            kclvm_list_append(list, kclvm_value_Dict());
+            kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
             // optional mapping
-            kclvm_list_append(list, kclvm_value_Dict());
+            kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
             // cal order map
             kclvm_list_append(list, cal_map);
             // backtrack level map
-            kclvm_list_append(list, kclvm_value_Dict());
+            kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
             // backtrack cache
-            kclvm_list_append(list, kclvm_value_Dict());
+            kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
             // record instance
-            kclvm_list_append(list, ValueRef::bool(false).into_raw());
+            kclvm_list_append(list, ValueRef::bool(false).into_raw(ctx));
             // instance pkgpath
-            kclvm_list_append(list, ValueRef::str(&now_meta_info.kcl_pkgpath).into_raw());
-            let dict = kclvm_value_Dict();
+            kclvm_list_append(
+                list,
+                ValueRef::str(&now_meta_info.kcl_pkgpath).into_raw(ctx),
+            );
+            let dict = schema_value.kwargs.clone().into_raw(ctx);
             schema_fn(ctx, list, dict);
-            let list = kclvm_value_List();
+            let list = schema_value.args.clone().into_raw(ctx);
             // Schema function closures
             // is sub schema
-            kclvm_list_append(list, ValueRef::bool(true).into_raw());
+            kclvm_list_append(list, ValueRef::bool(true).into_raw(ctx));
             // config meta
-            kclvm_list_append(list, config_meta_new.into_raw());
+            kclvm_list_append(list, config_meta_new.into_raw(ctx));
             // schema
-            kclvm_list_append(list, config_new.into_raw());
+            kclvm_list_append(list, config_new.into_raw(ctx));
             // config
-            kclvm_list_append(list, kclvm_value_Dict());
+            kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
             // optional mapping
-            kclvm_list_append(list, kclvm_value_Dict());
+            kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
             // cal order map
             kclvm_list_append(list, cal_map);
             // backtrack level map
-            kclvm_list_append(list, kclvm_value_Dict());
+            kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
             // backtrack cache
-            kclvm_list_append(list, kclvm_value_Dict());
+            kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
             // record instance
-            kclvm_list_append(list, ValueRef::bool(true).into_raw());
+            kclvm_list_append(list, ValueRef::bool(true).into_raw(ctx));
             // instance pkgpath
-            kclvm_list_append(list, ValueRef::str(&now_meta_info.kcl_pkgpath).into_raw());
+            kclvm_list_append(
+                list,
+                ValueRef::str(&now_meta_info.kcl_pkgpath).into_raw(ctx),
+            );
             let value = schema_fn(ctx, list, dict);
             ptr_as_ref(value)
         };
@@ -153,7 +151,11 @@ pub fn resolve_schema(schema: &ValueRef, keys: &[String]) -> ValueRef {
 }
 
 /// Type pack and check ValueRef with the expected type vector
-pub fn type_pack_and_check(value: &ValueRef, expected_types: Vec<&str>) -> ValueRef {
+pub fn type_pack_and_check(
+    ctx: &mut Context,
+    value: &ValueRef,
+    expected_types: Vec<&str>,
+) -> ValueRef {
     if value.is_none_or_undefined() || expected_types.is_empty() {
         return value.clone();
     }
@@ -164,19 +166,19 @@ pub fn type_pack_and_check(value: &ValueRef, expected_types: Vec<&str>) -> Value
     let expected_type = &expected_types.join(" | ").replace('@', "");
     for tpe in expected_types {
         let tpe = if !tpe.contains('.') {
-            let ctx = Context::current_context_mut();
             match ctx.import_names.get(tpe) {
                 Some(mapping) => mapping.keys().next().unwrap(),
                 None => tpe,
             }
         } else {
             tpe
-        };
+        }
+        .to_string();
         if !is_schema {
-            converted_value = convert_collection_value(value, tpe);
+            converted_value = convert_collection_value(ctx, value, &tpe);
         }
         // Runtime type check
-        checked = check_type(&converted_value, tpe);
+        checked = check_type(&converted_value, &tpe);
         if checked {
             break;
         }
@@ -188,34 +190,40 @@ pub fn type_pack_and_check(value: &ValueRef, expected_types: Vec<&str>) -> Value
 }
 
 /// Convert collection value including dict/list to the potential schema
-pub fn convert_collection_value(value: &ValueRef, tpe: &str) -> ValueRef {
+pub fn convert_collection_value(ctx: &mut Context, value: &ValueRef, tpe: &str) -> ValueRef {
     // May be a type alias.
     let tpe = if !tpe.contains('.') {
-        let ctx = Context::current_context_mut();
         match ctx.import_names.get(tpe) {
             Some(mapping) => mapping.keys().next().unwrap(),
             None => tpe,
         }
     } else {
         tpe
-    };
+    }
+    .to_string();
     if tpe.is_empty() || tpe == KCL_TYPE_ANY {
         return value.clone();
     }
     let is_collection = value.is_list() || value.is_dict();
-    let invalid_match_dict = is_dict_type(tpe) && !value.is_dict();
-    let invalid_match_list = is_list_type(tpe) && !value.is_list();
+    let invalid_match_dict = is_dict_type(&tpe) && !value.is_dict();
+    let invalid_match_list = is_list_type(&tpe) && !value.is_list();
     let invalid_match = invalid_match_dict || invalid_match_list;
-    if !is_collection || invalid_match || is_type_union(tpe) {
+    if !is_collection || invalid_match {
         return value.clone();
     }
-    if is_dict_type(tpe) {
+    // Convert a vlaue to union types e.g., {a: 1} => A | B
+    if is_type_union(&tpe) {
+        let types = split_type_union(&tpe);
+        convert_collection_value_with_union_types(ctx, value, &types)
+    } else if is_dict_type(&tpe) {
         //let (key_tpe, value_tpe) = separate_kv(tpe);
-        let (_, value_tpe) = separate_kv(&dereference_type(tpe));
+        let (_, value_tpe) = separate_kv(&dereference_type(&tpe));
         let mut expected_dict = ValueRef::dict(None);
         let dict_ref = value.as_dict_ref();
+        expected_dict
+            .set_potential_schema_type(&dict_ref.potential_schema.clone().unwrap_or_default());
         for (k, v) in &dict_ref.values {
-            let expected_value = convert_collection_value(v, &value_tpe);
+            let expected_value = convert_collection_value(ctx, v, &value_tpe);
             let op = dict_ref
                 .ops
                 .get(k)
@@ -224,19 +232,18 @@ pub fn convert_collection_value(value: &ValueRef, tpe: &str) -> ValueRef {
             expected_dict.dict_update_entry(k, &expected_value, op, index)
         }
         expected_dict
-    } else if is_list_type(tpe) {
-        let expected_type = dereference_type(tpe);
+    } else if is_list_type(&tpe) {
+        let expected_type = dereference_type(&tpe);
         let mut expected_list = ValueRef::list(None);
         let list_ref = value.as_list_ref();
         for v in &list_ref.values {
-            let expected_value = convert_collection_value(v, &expected_type);
+            let expected_value = convert_collection_value(ctx, v, &expected_type);
             expected_list.list_append(&expected_value)
         }
         expected_list
-    } else if BUILTIN_TYPES.contains(&tpe) {
+    } else if BUILTIN_TYPES.contains(&tpe.as_str()) {
         value.clone()
     } else {
-        let ctx = Context::current_context_mut();
         let now_meta_info = ctx.panic_info.clone();
         let mut schema_type_name = if tpe.contains('.') {
             tpe.to_string()
@@ -272,67 +279,72 @@ pub fn convert_collection_value(value: &ValueRef, tpe: &str) -> ValueRef {
                 }
             }
         }
-        let has_schema_type = {
-            let all_schemas = ctx.all_schemas.borrow_mut();
-            all_schemas.contains_key(&schema_type_name)
-        };
+        let has_schema_type = { ctx.all_schemas.contains_key(&schema_type_name) };
         if has_schema_type {
-            let schema_type = {
-                let all_schemas = ctx.all_schemas.borrow_mut();
-                all_schemas.get(&schema_type_name).unwrap().clone()
-            };
-            let schema_type = schema_type.as_function();
-            let schema_fn_ptr = schema_type.fn_ptr;
+            let schema_type = { ctx.all_schemas.get(&schema_type_name).unwrap().clone() };
+            let schema_fn = schema_type.func.as_function();
+            let schema_fn_ptr = schema_fn.fn_ptr;
             let value = unsafe {
                 let schema_fn: SchemaTypeFunc = transmute_copy(&schema_fn_ptr);
-                let ctx = kclvm_context_current();
-                let cal_order = kclvm_value_Dict();
-                let list = kclvm_value_List();
+                let cal_order = kclvm_value_Dict(ctx as *mut Context);
+                let list = kclvm_value_List(ctx as *mut Context);
                 // Schema function closures
                 // is_sub_schema
-                kclvm_list_append(list, ValueRef::bool(false).into_raw());
+                kclvm_list_append(list, ValueRef::bool(false).into_raw(ctx));
                 // config meta
-                kclvm_list_append(list, kclvm_value_Dict());
+                kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
                 // config
-                kclvm_list_append(list, value.clone().into_raw());
+                kclvm_list_append(list, value.clone().into_raw(ctx));
                 // schema
-                kclvm_list_append(list, kclvm_value_Dict());
+                kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
                 // optional mapping
-                kclvm_list_append(list, kclvm_value_Dict());
+                kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
                 // cal order map
                 kclvm_list_append(list, cal_order);
                 // backtrack level map
-                kclvm_list_append(list, kclvm_value_Dict());
+                kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
                 // backtrack cache
-                kclvm_list_append(list, kclvm_value_Dict());
+                kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
                 // record instance
-                kclvm_list_append(list, ValueRef::bool(false).into_raw());
+                kclvm_list_append(list, ValueRef::bool(false).into_raw(ctx));
                 // instance pkgpath
-                kclvm_list_append(list, ValueRef::str(&now_meta_info.kcl_pkgpath).into_raw());
-                let dict = kclvm_value_Dict();
+                kclvm_list_append(
+                    list,
+                    ValueRef::str(&now_meta_info.kcl_pkgpath).into_raw(ctx),
+                );
+                let dict = kclvm_value_Dict(ctx as *mut Context);
                 schema_fn(ctx, list, dict);
-                let list = kclvm_value_List();
+                let list = kclvm_value_List(ctx as *mut Context);
+
+                // Try convert the  config to schema, if failed, return the config
+                if !value.is_fit_schema(&schema_type, ptr_as_ref(cal_order)) {
+                    return value.clone();
+                }
+
                 // Schema function closures
                 // is_sub_schema
-                kclvm_list_append(list, ValueRef::bool(true).into_raw());
+                kclvm_list_append(list, ValueRef::bool(true).into_raw(ctx));
                 // config meta
-                kclvm_list_append(list, kclvm_value_Dict());
+                kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
                 // config
-                kclvm_list_append(list, value.clone().into_raw());
+                kclvm_list_append(list, value.clone().into_raw(ctx));
                 // schema
-                kclvm_list_append(list, kclvm_value_Dict());
+                kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
                 // optional mapping
-                kclvm_list_append(list, kclvm_value_Dict());
+                kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
                 // cal order map
                 kclvm_list_append(list, cal_order);
                 // backtrack level map
-                kclvm_list_append(list, kclvm_value_Dict());
+                kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
                 // backtrack cache
-                kclvm_list_append(list, kclvm_value_Dict());
+                kclvm_list_append(list, kclvm_value_Dict(ctx as *mut Context));
                 // record instance
-                kclvm_list_append(list, ValueRef::bool(true).into_raw());
+                kclvm_list_append(list, ValueRef::bool(true).into_raw(ctx));
                 // instance pkgpath
-                kclvm_list_append(list, ValueRef::str(&now_meta_info.kcl_pkgpath).into_raw());
+                kclvm_list_append(
+                    list,
+                    ValueRef::str(&now_meta_info.kcl_pkgpath).into_raw(ctx),
+                );
                 let value = schema_fn(ctx, list, dict);
                 ptr_as_ref(value)
             };
@@ -340,6 +352,26 @@ pub fn convert_collection_value(value: &ValueRef, tpe: &str) -> ValueRef {
             return value.clone();
         }
         ctx.panic_info = now_meta_info;
+        value.clone()
+    }
+}
+
+/// Convert collection value including dict/list to the potential schema and return errors.
+pub fn convert_collection_value_with_union_types(
+    ctx: &mut Context,
+    value: &ValueRef,
+    types: &[&str],
+) -> ValueRef {
+    if value.is_schema() {
+        value.clone()
+    } else {
+        for tpe in types {
+            // Try match every type and convert the value, if matched, return the value.
+            let value = convert_collection_value(ctx, value, tpe);
+            if check_type(&value, tpe) {
+                return value;
+            }
+        }
         value.clone()
     }
 }
@@ -391,9 +423,10 @@ pub fn check_type(value: &ValueRef, tpe: &str) -> bool {
 pub fn check_type_union(value: &ValueRef, tpe: &str) -> bool {
     let expected_types = split_type_union(tpe);
     if expected_types.len() <= 1 {
-        return false;
+        false
+    } else {
+        expected_types.iter().any(|tpe| check_type(value, tpe))
     }
-    return expected_types.iter().any(|tpe| check_type(value, tpe));
 }
 
 /// check_type_literal returns the value wether match the given the literal type string
@@ -510,7 +543,7 @@ pub fn is_literal_type(tpe: &str) -> bool {
 pub fn is_dict_type(tpe: &str) -> bool {
     let count = tpe.chars().count();
     count >= 2
-        && matches!(tpe.chars().nth(0), Some('{'))
+        && matches!(tpe.chars().next(), Some('{'))
         && matches!(tpe.chars().nth(count - 1), Some('}'))
 }
 
@@ -519,7 +552,7 @@ pub fn is_dict_type(tpe: &str) -> bool {
 pub fn is_list_type(tpe: &str) -> bool {
     let count = tpe.chars().count();
     count >= 2
-        && matches!(tpe.chars().nth(0), Some('['))
+        && matches!(tpe.chars().next(), Some('['))
         && matches!(tpe.chars().nth(count - 1), Some(']'))
 }
 
@@ -578,8 +611,15 @@ fn is_number_multiplier_literal_type(tpe: &str) -> bool {
     }
 }
 
+#[inline]
+fn ty_str_strip(ty_str: &str) -> &str {
+    // Empty and tab chars.
+    let chars = " \t";
+    ty_str.trim_matches(|c| chars.contains(c))
+}
+
 /// separate_kv split the union type and do not split '|' in dict and list
-/// e.g., "int|str" -> vec!["int", "str"]
+/// e.g., "int|str" -> vec!["int", "str"], "int | str" -> vec!["int", "str"]
 pub fn split_type_union(tpe: &str) -> Vec<&str> {
     let mut i = 0;
     let mut s_index = 0;
@@ -618,7 +658,8 @@ pub fn split_type_union(tpe: &str) -> Vec<&str> {
         i += 1;
     }
     types.push(&tpe[s_index..]);
-    types
+    // Remove empty and tab chars in the type string.
+    types.iter().map(|ty| ty_str_strip(ty)).collect()
 }
 
 /// separate_kv function separates key_type and value_type in the dictionary type strings,
@@ -927,7 +968,9 @@ mod test_value_type {
         let cases = [
             ("", vec![""]),
             ("str|int", vec!["str", "int"]),
+            ("str | int", vec!["str", "int"]),
             ("str|int|bool", vec!["str", "int", "bool"]),
+            ("str | int | bool", vec!["str", "int", "bool"]),
             ("str|[str]", vec!["str", "[str]"]),
             ("str|{str:int}", vec!["str", "{str:int}"]),
             ("A|B|C", vec!["A", "B", "C"]),

@@ -1,4 +1,4 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 
 use crate::*;
 
@@ -16,6 +16,7 @@ impl DecoratorValue {
 
     pub fn run(
         &self,
+        ctx: &mut Context,
         attr_name: &str,
         is_schema_target: bool,
         config_value: &ValueRef,
@@ -58,12 +59,11 @@ impl DecoratorValue {
                         if !msg.is_empty() {
                             err_msg.push_str(&msg);
                         }
-                        let ctx = Context::current_context_mut();
                         if let (Some(filename), Some(line)) = (filename, line) {
                             ctx.set_kcl_filename(&filename.as_str());
                             ctx.panic_info.kcl_line = line.as_int() as i32;
                         }
-                        ctx.set_err_type(&ErrType::Deprecated_TYPE);
+                        ctx.set_err_type(&RuntimeErrorType::Deprecated);
 
                         panic!("{}", err_msg)
                     }
@@ -72,16 +72,12 @@ impl DecoratorValue {
                     if !msg.is_empty() {
                         err_msg.push_str(&msg);
                     }
-
-                    let ctx = Context::current_context_mut();
-                    ctx.set_err_type(&ErrType::Deprecated_Warning_TYPE);
-
-                    ctx.set_warnning_message(err_msg.as_str());
+                    ctx.set_err_type(&RuntimeErrorType::DeprecatedWarning);
+                    ctx.set_warning_message(err_msg.as_str());
                 } else {
-                    let ctx = Context::current_context_mut();
                     let err_msg = format!("{attr_name} was deprecated ");
-                    ctx.set_err_type(&ErrType::Deprecated_Warning_TYPE);
-                    ctx.set_warnning_message(err_msg.as_str());
+                    ctx.set_err_type(&RuntimeErrorType::DeprecatedWarning);
+                    ctx.set_warning_message(err_msg.as_str());
                 }
             }
             DEPRECATED_INFO => { /* Nothing to do on Info decorator */ }
@@ -101,13 +97,14 @@ impl DecoratorValue {
 mod test_value_decorator {
     use crate::*;
 
-    fn assert_panic<F: FnOnce() -> () + std::panic::UnwindSafe>(func: F) {
+    fn assert_panic<F: FnOnce() + std::panic::UnwindSafe>(func: F) {
         let result = std::panic::catch_unwind(func);
         assert!(result.is_err())
     }
 
     #[test]
     fn test_decorator() {
+        let mut ctx = Context::new();
         let args = ValueRef::list(None);
         let mut kwargs = ValueRef::dict(None);
         let test_deprecated_decorator = DecoratorValue::new(DEPRECATED_DECORATOR, &args, &kwargs);
@@ -115,12 +112,13 @@ mod test_value_decorator {
         let schema_name = "Data";
         let config_meta = ValueRef::dict(None);
         let config_value = ValueRef::dict_str(&[("key1", "value1")]);
-        test_deprecated_decorator.run(schema_name, true, &config_value, &config_meta);
+        test_deprecated_decorator.run(&mut ctx, schema_name, true, &config_value, &config_meta);
     }
 
     #[test]
     fn test_decorator_invalid() {
         assert_panic(|| {
+            let mut ctx = Context::new();
             let args = ValueRef::list(None);
             let kwargs = ValueRef::dict(None);
             let test_deprecated_decorator =
@@ -128,7 +126,7 @@ mod test_value_decorator {
             let schema_name = "Data";
             let config_meta = ValueRef::dict(None);
             let config_value = ValueRef::dict_str(&[("key1", "value1")]);
-            test_deprecated_decorator.run(schema_name, true, &config_value, &config_meta);
+            test_deprecated_decorator.run(&mut ctx, schema_name, true, &config_value, &config_meta);
         });
     }
 }

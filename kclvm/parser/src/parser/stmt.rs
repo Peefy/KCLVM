@@ -2,7 +2,8 @@
 #![allow(unused_macros)]
 
 use compiler_base_span::{span::new_byte_pos, BytePos, Span};
-use kclvm_ast::token::{DelimToken, LitKind, Token, TokenKind};
+use kclvm_ast::token::VALID_SPACES_LENGTH;
+use kclvm_ast::token::{CommentKind, DelimToken, LitKind, Token, TokenKind};
 use kclvm_ast::{ast::*, expr_as, node_ref};
 use kclvm_span::symbol::kw;
 
@@ -38,8 +39,10 @@ impl<'a> Parser<'a> {
             return Some(stmt);
         }
 
-        self.sess
-            .struct_span_error("expected statement", self.token.span);
+        self.sess.struct_span_error(
+            &format!("unexpected '{:?}'", self.token.kind),
+            self.token.span,
+        );
 
         None
     }
@@ -134,9 +137,15 @@ impl<'a> Parser<'a> {
         close_tok: TokenKind,
     ) -> Vec<NodeRef<Stmt>> {
         let mut stmt_list = Vec::new();
-
+        self.validate_dedent();
         self.bump_token(open_tok);
         loop {
+            if self.token.kind == TokenKind::Eof {
+                self.bump();
+                break;
+            }
+
+            self.validate_dedent();
             if self.token.kind == close_tok {
                 self.bump_token(close_tok);
                 break;
@@ -257,10 +266,9 @@ impl<'a> Parser<'a> {
                     return Some(node_ref!(
                         Stmt::SchemaAttr(SchemaAttr {
                             doc: "".to_string(),
-                            name: node_ref!(target.names.join("."), targets[0].pos()),
-                            type_str: type_annotation.unwrap(),
+                            name: node_ref!(target.get_name(), targets[0].pos()),
                             ty: ty.unwrap(),
-                            op: Some(BinOrAugOp::Aug(aug_op)),
+                            op: Some(aug_op),
                             value: Some(value),
                             is_optional: false,
                             decorators: Vec::new(),
@@ -297,12 +305,7 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
 
             Some(node_ref!(
-                Stmt::Assign(AssignStmt {
-                    targets,
-                    value,
-                    type_annotation,
-                    ty,
-                }),
+                Stmt::Assign(AssignStmt { targets, value, ty }),
                 self.token_span_pos(token, stmt_end_token)
             ))
         } else {
@@ -312,8 +315,7 @@ impl<'a> Parser<'a> {
                     return Some(node_ref!(
                         Stmt::SchemaAttr(SchemaAttr {
                             doc: "".to_string(),
-                            name: node_ref!(target.names.join("."), targets[0].pos()),
-                            type_str: type_annotation.unwrap(),
+                            name: node_ref!(target.get_names().join("."), targets[0].pos()),
                             ty: ty.unwrap(),
                             op: None,
                             value: None,
@@ -340,9 +342,41 @@ impl<'a> Parser<'a> {
 
                 Some(t)
             } else {
+                let miss_expr = self.missing_expr();
+                self.skip_newlines();
                 self.sess
                     .struct_token_error(&[TokenKind::Assign.into()], self.token);
-                None
+                if type_annotation.is_some() && !targets.is_empty() && !is_in_schema_stmt {
+                    let mut pos = targets[0].pos();
+                    pos.3 = targets.last().unwrap().end_line;
+                    pos.4 = targets.last().unwrap().end_column;
+
+                    let targets: Vec<_> = targets
+                        .iter()
+                        .map(|expr| match &expr.node {
+                            Expr::Identifier(x) => {
+                                let mut x = x.clone();
+                                x.ctx = ExprContext::Store;
+                                Box::new(Node::node_with_pos(x, expr.pos()))
+                            }
+                            _ => {
+                                self.sess
+                                    .struct_token_error(&[TokenKind::ident_value()], self.token);
+                                Box::new(expr.into_missing_identifier())
+                            }
+                        })
+                        .collect();
+                    Some(Box::new(Node::node_with_pos(
+                        Stmt::Assign(AssignStmt {
+                            targets: targets.clone(),
+                            value: miss_expr,
+                            ty,
+                        }),
+                        pos,
+                    )))
+                } else {
+                    None
+                }
             }
         }
     }
@@ -387,6 +421,7 @@ impl<'a> Parser<'a> {
     fn parse_import_stmt(&mut self) -> NodeRef<Stmt> {
         let token = self.token;
         self.bump_keyword(kw::Import);
+        let dot_name_token = self.token;
 
         let mut leading_dot = Vec::new();
         while let TokenKind::DotDotDot = self.token.kind {
@@ -398,28 +433,41 @@ impl<'a> Parser<'a> {
             self.bump_token(TokenKind::Dot);
         }
         let dot_name = self.parse_identifier().node;
+        let dot_name_end_token = self.prev_token;
+
         let asname = if self.token.is_keyword(kw::As) {
             self.bump_keyword(kw::As);
             let ident = self.parse_identifier().node;
-            Some(ident.names.join("."))
+            match ident.names.len() {
+                1 => Some(ident.names[0].clone()),
+                _ => {
+                    self.sess
+                        .struct_span_error("Invalid import asname", self.token.span);
+                    None
+                }
+            }
         } else {
             None
         };
 
         let mut path = leading_dot.join("");
-        path.push_str(dot_name.names.join(".").as_str());
+        path.push_str(dot_name.get_names().join(".").as_str());
 
         let rawpath = path.clone();
+        let path_node = Node::node_with_pos(
+            path,
+            self.token_span_pos(dot_name_token, dot_name_end_token),
+        );
 
         let name = if let Some(as_name_value) = asname.clone() {
-            as_name_value
+            as_name_value.node
         } else {
-            dot_name.names.last().unwrap().clone()
+            dot_name.get_names().last().unwrap().clone()
         };
 
         let t = node_ref!(
             Stmt::Import(ImportStmt {
-                path,
+                path: path_node,
                 rawpath,
                 name,
                 asname,
@@ -487,7 +535,10 @@ impl<'a> Parser<'a> {
                 }
             } else {
                 self.skip_newlines();
-                self.parse_block_stmt_list(TokenKind::Indent, TokenKind::Dedent)
+                self.parse_block_stmt_list(
+                    TokenKind::Indent(VALID_SPACES_LENGTH),
+                    TokenKind::Dedent(VALID_SPACES_LENGTH),
+                )
             };
 
             IfStmt {
@@ -521,7 +572,10 @@ impl<'a> Parser<'a> {
                 }
             } else {
                 self.skip_newlines();
-                self.parse_block_stmt_list(TokenKind::Indent, TokenKind::Dedent)
+                self.parse_block_stmt_list(
+                    TokenKind::Indent(VALID_SPACES_LENGTH),
+                    TokenKind::Dedent(VALID_SPACES_LENGTH),
+                )
             };
 
             let t = node_ref!(
@@ -543,7 +597,19 @@ impl<'a> Parser<'a> {
         // else
         if self.token.is_keyword(kw::Else) {
             self.bump_keyword(kw::Else);
-            self.bump_token(TokenKind::Colon);
+
+            // `else if -> elif` error recovery.
+            if self.token.is_keyword(kw::If) {
+                self.sess.struct_span_error(
+                    "'else if' here is invalid in KCL, consider using the 'elif' keyword",
+                    self.token.span,
+                );
+            } else if self.token.kind != TokenKind::Colon {
+                self.sess
+                    .struct_token_error(&[TokenKind::Colon.into()], self.token);
+            }
+            // Bump colon token.
+            self.bump();
 
             let else_body = if self.token.kind != TokenKind::Newline {
                 if let Some(stmt) = self.parse_expr_or_assign_stmt(false) {
@@ -555,7 +621,10 @@ impl<'a> Parser<'a> {
                 }
             } else {
                 self.skip_newlines();
-                self.parse_block_stmt_list(TokenKind::Indent, TokenKind::Dedent)
+                self.parse_block_stmt_list(
+                    TokenKind::Indent(VALID_SPACES_LENGTH),
+                    TokenKind::Dedent(VALID_SPACES_LENGTH),
+                )
             };
 
             if_stmt.orelse = else_body;
@@ -563,8 +632,20 @@ impl<'a> Parser<'a> {
 
         // fix elif-list and else
         while let Some(mut x) = elif_list.pop() {
-            x.node.orelse = if_stmt.orelse;
-            let pos = x.clone().pos();
+            x.node.orelse = if_stmt.orelse.clone();
+            let pos = if if_stmt.orelse.is_empty() {
+                x.clone().pos()
+            } else {
+                let start_pos = x.clone().pos();
+                let end_pos = if_stmt.orelse.last().unwrap().pos();
+                (
+                    start_pos.0.clone(),
+                    start_pos.1,
+                    start_pos.2,
+                    end_pos.3,
+                    end_pos.4,
+                )
+            };
             let t = Box::new(Node::node_with_pos(Stmt::If(x.node), pos));
             if_stmt.orelse = vec![t];
         }
@@ -612,7 +693,7 @@ impl<'a> Parser<'a> {
         let name_expr = self.parse_identifier();
         let name_pos = name_expr.pos();
         let name = name_expr.node;
-        let name = node_ref!(name.names.join("."), name_pos);
+        let name = node_ref!(name.get_names().join("."), name_pos);
 
         if name
             .node
@@ -665,10 +746,17 @@ impl<'a> Parser<'a> {
 
         self.skip_newlines();
 
-        if let TokenKind::Indent = self.token.kind {
+        if let TokenKind::Indent(VALID_SPACES_LENGTH) = self.token.kind {
             let body = self.parse_schema_body();
 
-            let pos = self.token_span_pos(token, self.prev_token);
+            let mut pos = self.token_span_pos(token, self.prev_token);
+            // Insert a fake newline character to expand the scope of the schema，
+            // used to complete the schema attributes at the end of the file
+            // FIXME: fix in lsp
+            if let TokenKind::Eof = self.prev_token.kind {
+                pos.3 += 1;
+                pos.4 = 0;
+            }
 
             node_ref!(
                 Stmt::Schema(SchemaStmt {
@@ -691,7 +779,7 @@ impl<'a> Parser<'a> {
             let pos = self.token_span_pos(token, self.prev_token);
             node_ref!(
                 Stmt::Schema(SchemaStmt {
-                    doc: "".to_string(),
+                    doc: None,
                     name,
                     parent_name,
                     for_host_name,
@@ -770,11 +858,12 @@ impl<'a> Parser<'a> {
         let mut args = Arguments {
             args: Vec::new(),
             defaults: Vec::new(),
-            type_annotation_list: Vec::new(),
             ty_list: Vec::new(),
         };
 
         loop {
+            let marker = self.mark();
+
             let mut has_close_token = false;
             for token in close_tokens {
                 if *token == self.token.kind {
@@ -804,14 +893,12 @@ impl<'a> Parser<'a> {
 
             let name = node_ref!(name, self.token_span_pos(name_pos, name_end));
 
-            let (type_annotation, type_annotation_node) = if let TokenKind::Colon = self.token.kind
-            {
+            let type_annotation_node = if let TokenKind::Colon = self.token.kind {
                 self.bump_token(TokenKind::Colon);
                 let typ = self.parse_type_annotation();
-
-                (Some(node_ref!(typ.node.to_string(), typ.pos())), Some(typ))
+                Some(typ)
             } else {
-                (None, None)
+                None
             };
 
             let default_value = if let TokenKind::Assign = self.token.kind {
@@ -822,13 +909,14 @@ impl<'a> Parser<'a> {
             };
 
             args.args.push(name);
-            args.type_annotation_list.push(type_annotation);
             args.ty_list.push(type_annotation_node);
             args.defaults.push(default_value);
             // Parameter interval comma
             if let TokenKind::Comma = self.token.kind {
                 self.bump();
             }
+
+            self.drop(marker);
         }
 
         self.skip_newlines();
@@ -853,10 +941,19 @@ impl<'a> Parser<'a> {
     ///   LEFT_BRACKETS [NAME COLON] [ELLIPSIS] basic_type RIGHT_BRACKETS
     ///   COLON type [ASSIGN test] NEWLINE
     fn parse_schema_body(&mut self) -> SchemaStmt {
-        self.bump_token(TokenKind::Indent);
+        self.validate_dedent();
+        self.bump_token(TokenKind::Indent(VALID_SPACES_LENGTH));
 
-        // doc string
-        let body_doc = self.parse_doc();
+        // doc string when it is not a string-like attribute statement.
+        let body_doc = if let Some(peek) = self.cursor.peek() {
+            if matches!(peek.kind, TokenKind::Colon) {
+                None
+            } else {
+                self.parse_doc()
+            }
+        } else {
+            self.parse_doc()
+        };
 
         // mixin
         let body_mixins = if self.token.is_keyword(kw::Mixin) {
@@ -873,8 +970,11 @@ impl<'a> Parser<'a> {
 
         loop {
             let marker = self.mark();
-            if matches!(self.token.kind, TokenKind::Dedent | TokenKind::Eof)
-                || self.token.is_keyword(kw::Check)
+            self.validate_dedent();
+            if matches!(
+                self.token.kind,
+                TokenKind::Dedent(VALID_SPACES_LENGTH) | TokenKind::Eof
+            ) || self.token.is_keyword(kw::Check)
             {
                 break;
             }
@@ -887,6 +987,20 @@ impl<'a> Parser<'a> {
             else if self.token.is_keyword(kw::If) {
                 body_body.push(self.parse_if_stmt());
                 continue;
+            }
+            // schema_attribute_stmt: string COLON type_annotation
+            else if self.token.is_string_lit() {
+                if let Some(peek) = self.cursor.peek() {
+                    if let TokenKind::Colon = peek.kind {
+                        let token = self.token;
+                        let attr = self.parse_schema_attribute();
+                        body_body.push(node_ref!(
+                            Stmt::SchemaAttr(attr),
+                            self.token_span_pos(token, self.prev_token)
+                        ));
+                        continue;
+                    }
+                }
             }
             // schema_attribute_stmt
             else if let TokenKind::At = self.token.kind {
@@ -954,26 +1068,23 @@ impl<'a> Parser<'a> {
                 if let Stmt::Assign(assign) = x.node.clone() {
                     if assign.targets.len() == 1 {
                         let ident = assign.targets[0].clone().node;
-                        if let Some(type_str) = assign.type_annotation {
-                            if !type_str.node.is_empty() {
-                                body_body.push(node_ref!(
-                                    Stmt::SchemaAttr(SchemaAttr {
-                                        doc: "".to_string(),
-                                        name: node_ref!(
-                                            ident.names.join("."),
-                                            assign.targets[0].pos()
-                                        ),
-                                        type_str,
-                                        ty: assign.ty.unwrap(),
-                                        op: Some(BinOrAugOp::Aug(AugOp::Assign)),
-                                        value: Some(assign.value),
-                                        is_optional: false,
-                                        decorators: Vec::new(),
-                                    }),
-                                    x.pos()
-                                ));
-                                continue;
-                            }
+                        if assign.ty.is_some() {
+                            body_body.push(node_ref!(
+                                Stmt::SchemaAttr(SchemaAttr {
+                                    doc: "".to_string(),
+                                    name: node_ref!(
+                                        ident.get_names().join("."),
+                                        assign.targets[0].pos()
+                                    ),
+                                    ty: assign.ty.unwrap(),
+                                    op: Some(AugOp::Assign),
+                                    value: Some(assign.value),
+                                    is_optional: false,
+                                    decorators: Vec::new(),
+                                }),
+                                x.pos()
+                            ));
+                            continue;
                         };
                     }
                 }
@@ -988,8 +1099,8 @@ impl<'a> Parser<'a> {
 
         // check_block
         let body_checks = self.parse_schema_check_block();
-
-        self.bump_token(TokenKind::Dedent);
+        self.validate_dedent();
+        self.bump_token(TokenKind::Dedent(VALID_SPACES_LENGTH));
         self.skip_newlines();
 
         SchemaStmt {
@@ -1000,6 +1111,7 @@ impl<'a> Parser<'a> {
             index_signature: body_index_signature,
 
             name: Box::new(Node {
+                id: AstIndex::default(),
                 node: "".to_string(),
                 filename: "".to_string(),
                 line: 0,
@@ -1030,12 +1142,13 @@ impl<'a> Parser<'a> {
         // NEWLINE _INDENT
         let has_newline = if self.token.kind == TokenKind::Newline {
             self.skip_newlines();
-
-            if self.token.kind == TokenKind::Indent {
+            if self.token.kind == TokenKind::Indent(VALID_SPACES_LENGTH) {
                 self.bump();
             } else {
-                self.sess
-                    .struct_token_error(&[TokenKind::Indent.into()], self.token)
+                self.sess.struct_token_error(
+                    &[TokenKind::Indent(VALID_SPACES_LENGTH).into()],
+                    self.token,
+                )
             }
             true
         } else {
@@ -1043,9 +1156,10 @@ impl<'a> Parser<'a> {
         };
 
         loop {
+            self.validate_dedent();
             if matches!(
                 self.token.kind,
-                TokenKind::CloseDelim(DelimToken::Bracket) | TokenKind::Dedent
+                TokenKind::CloseDelim(DelimToken::Bracket) | TokenKind::Dedent(VALID_SPACES_LENGTH)
             ) {
                 break;
             }
@@ -1063,11 +1177,14 @@ impl<'a> Parser<'a> {
 
         // _DEDENT
         if has_newline {
-            if self.token.kind == TokenKind::Dedent {
+            self.validate_dedent();
+            if self.token.kind == TokenKind::Dedent(VALID_SPACES_LENGTH) {
                 self.bump();
             } else {
-                self.sess
-                    .struct_token_error(&[TokenKind::Dedent.into()], self.token)
+                self.sess.struct_token_error(
+                    &[TokenKind::Dedent(VALID_SPACES_LENGTH).into()],
+                    self.token,
+                )
             }
         }
 
@@ -1078,7 +1195,7 @@ impl<'a> Parser<'a> {
 
     /// Syntax:
     /// schema_attribute_stmt: attribute_stmt NEWLINE
-    /// attribute_stmt: [decorators] identifier [QUESTION] COLON type [(ASSIGN|COMP_OR) test]
+    /// attribute_stmt: [decorators] (identifier | string) [QUESTION] COLON type [(ASSIGN|COMP_OR) test]
     fn parse_schema_attribute(&mut self) -> SchemaAttr {
         let doc = "".to_string();
 
@@ -1091,12 +1208,17 @@ impl<'a> Parser<'a> {
             Vec::new()
         };
 
-        let name_expr = self.parse_identifier();
+        // Parse schema identifier-like or string-like attributes
+        let name = if let Some(name) = self.parse_string_attribute() {
+            name
+        } else {
+            let name_expr = self.parse_identifier();
+            let name_pos = name_expr.pos();
+            let name = name_expr.node;
+            node_ref!(name.get_names().join("."), name_pos)
+        };
 
-        let name_pos = name_expr.pos();
-        let name = name_expr.node;
-        let name = node_ref!(name.names.join("."), name_pos);
-
+        // Parse attribute optional annotation `?`
         let is_optional = if let TokenKind::Question = self.token.kind {
             self.bump_token(TokenKind::Question);
             true
@@ -1104,17 +1226,18 @@ impl<'a> Parser<'a> {
             false
         };
 
+        // Bump the schema attribute annotation token `:`
         self.bump_token(TokenKind::Colon);
 
-        let typ = self.parse_type_annotation();
-        let type_str = node_ref!(typ.node.to_string(), typ.pos());
+        // Parse the schema attribute type annotation.
+        let ty = self.parse_type_annotation();
 
         let op = if self.token.kind == TokenKind::Assign {
             self.bump_token(TokenKind::Assign);
-            Some(BinOrAugOp::Aug(AugOp::Assign))
+            Some(AugOp::Assign)
         } else if let TokenKind::BinOpEq(x) = self.token.kind {
             self.bump_token(self.token.kind);
-            Some(BinOrAugOp::Aug(x.into()))
+            Some(x.into())
         } else {
             None
         };
@@ -1128,8 +1251,7 @@ impl<'a> Parser<'a> {
         SchemaAttr {
             doc,
             name,
-            type_str,
-            ty: typ,
+            ty,
             op,
             value,
             is_optional,
@@ -1178,27 +1300,19 @@ impl<'a> Parser<'a> {
     ///   LEFT_BRACKETS [NAME COLON] [ELLIPSIS] basic_type RIGHT_BRACKETS
     ///   COLON type [ASSIGN test] NEWLINE
     fn parse_schema_index_signature(&mut self) -> SchemaIndexSignature {
-        let (key_name, key_type, any_other) = if matches!(self.token.kind, TokenKind::DotDotDot) {
+        let (key_name, key_ty, any_other) = if matches!(self.token.kind, TokenKind::DotDotDot) {
             // bump token `...`
             self.bump();
-            let key_type = {
-                let typ = self.parse_type_annotation();
-                node_ref!(typ.node.to_string(), typ.pos())
-            };
-            (None, key_type, true)
+            (None, self.parse_type_annotation(), true)
         } else {
             let token = self.token;
             let expr = self.parse_identifier_expr();
             let ident = self.expr_as_identifier(expr.clone(), token);
             let pos = expr.pos();
-            let key_name = ident.names.join(".");
+            let key_name = ident.get_names().join(".");
 
             if let TokenKind::CloseDelim(DelimToken::Bracket) = self.token.kind {
-                let key_type = {
-                    let typ = node_ref!(Type::Named(ident), pos);
-                    node_ref!(typ.node.to_string(), typ.pos())
-                };
-                (None, key_type, false)
+                (None, node_ref!(Type::Named(ident), pos), false)
             } else {
                 self.bump_token(TokenKind::Colon);
                 let any_other = if let TokenKind::DotDotDot = self.token.kind {
@@ -1207,19 +1321,14 @@ impl<'a> Parser<'a> {
                 } else {
                     false
                 };
-                let key_type = {
-                    let typ = self.parse_type_annotation();
-                    node_ref!(typ.node.to_string(), typ.pos())
-                };
-                (Some(key_name), key_type, any_other)
+                (Some(key_name), self.parse_type_annotation(), any_other)
             }
         };
 
         self.bump_token(TokenKind::CloseDelim(DelimToken::Bracket));
         self.bump_token(TokenKind::Colon);
 
-        let typ = self.parse_type_annotation();
-        let value_type = node_ref!(typ.node.to_string(), typ.pos());
+        let value_ty = self.parse_type_annotation();
 
         let value = if let TokenKind::Assign = self.token.kind {
             self.bump();
@@ -1232,9 +1341,8 @@ impl<'a> Parser<'a> {
 
         SchemaIndexSignature {
             key_name,
-            key_type,
-            value_type,
-            value_ty: typ,
+            key_ty,
+            value_ty,
             value,
             any_other,
         }
@@ -1250,9 +1358,8 @@ impl<'a> Parser<'a> {
             self.bump_keyword(kw::Check);
             self.bump_token(TokenKind::Colon);
             self.skip_newlines();
-
-            self.bump_token(TokenKind::Indent);
-            while self.token.kind != TokenKind::Dedent {
+            self.bump_token(TokenKind::Indent(VALID_SPACES_LENGTH));
+            while self.token.kind != TokenKind::Dedent(VALID_SPACES_LENGTH) {
                 let marker = self.mark();
                 if matches!(self.token.kind, TokenKind::Eof) {
                     self.sess
@@ -1268,7 +1375,8 @@ impl<'a> Parser<'a> {
                 self.skip_newlines();
                 self.drop(marker);
             }
-            self.bump_token(TokenKind::Dedent);
+            self.validate_dedent();
+            self.bump_token(TokenKind::Dedent(VALID_SPACES_LENGTH));
         }
 
         check_expr_list
@@ -1290,7 +1398,7 @@ impl<'a> Parser<'a> {
         let name_expr = self.parse_identifier_expr();
         let name_pos = name_expr.pos();
         let name = expr_as!(name_expr, Expr::Identifier).unwrap();
-        let name = node_ref!(name.names.join("."), name_pos);
+        let name = node_ref!(name.get_names().join("."), name_pos);
 
         let args = if let TokenKind::OpenDelim(DelimToken::Bracket) = self.token.kind {
             self.parse_parameters(
@@ -1364,8 +1472,7 @@ impl<'a> Parser<'a> {
 
         self.bump_token(TokenKind::Colon);
         self.skip_newlines();
-
-        self.bump_token(TokenKind::Indent);
+        self.bump_token(TokenKind::Indent(VALID_SPACES_LENGTH));
 
         // doc string
         let body_doc = match self.token.kind {
@@ -1374,19 +1481,24 @@ impl<'a> Parser<'a> {
                     let doc_expr = self.parse_str_expr(lit);
                     self.skip_newlines();
                     match &doc_expr.node {
-                        Expr::StringLit(str) => str.raw_value.clone(),
-                        Expr::JoinedString(str) => str.raw_value.clone(),
-                        _ => "".to_string(),
+                        Expr::StringLit(str) => {
+                            Some(node_ref!(str.raw_value.clone(), doc_expr.pos()))
+                        }
+                        Expr::JoinedString(str) => {
+                            Some(node_ref!(str.raw_value.clone(), doc_expr.pos()))
+                        }
+                        _ => None,
                     }
                 } else {
-                    "".to_string()
+                    None
                 }
             }
-            _ => "".to_string(),
+            _ => None,
         };
 
         let mut check_expr_list = vec![];
-        while self.token.kind != TokenKind::Dedent {
+        self.validate_dedent();
+        while self.token.kind != TokenKind::Dedent(VALID_SPACES_LENGTH) {
             let marker = self.mark();
             if matches!(self.token.kind, TokenKind::Eof) {
                 self.sess
@@ -1402,7 +1514,8 @@ impl<'a> Parser<'a> {
             self.skip_newlines();
             self.drop(marker);
         }
-        self.bump_token(TokenKind::Dedent);
+        self.validate_dedent();
+        self.bump_token(TokenKind::Dedent(VALID_SPACES_LENGTH));
 
         let pos = self.token_span_pos(token, self.prev_token);
 
@@ -1418,6 +1531,23 @@ impl<'a> Parser<'a> {
             }),
             pos
         )
+    }
+
+    pub(crate) fn parse_string_attribute(&mut self) -> Option<NodeRef<String>> {
+        match self.token.kind {
+            TokenKind::Literal(lit) => {
+                if let LitKind::Str { .. } = lit.kind {
+                    let str_expr = self.parse_str_expr(lit);
+                    match &str_expr.node {
+                        Expr::StringLit(str) => Some(node_ref!(str.value.clone(), str_expr.pos())),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
     pub(crate) fn parse_joined_string(
@@ -1485,9 +1615,8 @@ impl<'a> Parser<'a> {
             if let TokenKind::Colon = parser.token.kind {
                 // bump the format spec interval token `:`.
                 parser.bump();
-                if let TokenKind::DocComment(_) = parser.token.kind {
-                    let format_spec = parser.sess.span_to_snippet(parser.token.span);
-                    formatted_value.format_spec = Some(format_spec);
+                if let TokenKind::DocComment(CommentKind::Line(symbol)) = parser.token.kind {
+                    formatted_value.format_spec = Some(symbol.as_str());
                 } else {
                     this.sess.struct_span_error(
                         "invalid joined string spec without #",

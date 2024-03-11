@@ -12,7 +12,14 @@ Node {
                             node: Identifier(
                                 Identifier {
                                     names: [
-                                        "a",
+                                        Node {
+                                            node: "a",
+                                            filename: "",
+                                            line: 1,
+                                            column: 1,
+                                            end_line: 1,
+                                            end_column: 2,
+                                        },
                                     ],
                                     pkgpath: "",
                                     ctx: Load,
@@ -24,9 +31,7 @@ Node {
                             end_line: 1,
                             end_column: 2,
                         },
-                        op: Bin(
-                            Add,
-                        ),
+                        op: Add,
                         right: Node {
                             node: Missing(
                                 MissingExpr,

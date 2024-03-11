@@ -6,20 +6,28 @@ pub mod parser;
 mod unify;
 mod walker;
 
-use std::rc::Rc;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 pub use constants::*;
 pub use context::{TypeContext, TypeInferMethods};
+use indexmap::IndexMap;
 use kclvm_ast::ast;
 use kclvm_ast::MAIN_PKG;
+use kclvm_error::diagnostic::Range;
 use kclvm_error::Position;
 pub use unify::*;
 pub use walker::walk_type;
 
-use indexmap::IndexMap;
+use super::resolver::doc::Example;
 
 #[cfg(test)]
 mod tests;
+
+/// TypeRef represents a reference to a type that exists to avoid copying types everywhere affecting
+/// performance. For example, for two instances that are both integer types, there is actually no
+/// difference between them.
+pub type TypeRef = Arc<Type>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Type {
@@ -31,6 +39,8 @@ pub struct Type {
     /// also contained in `kind`.
     flags: TypeFlags,
 }
+
+unsafe impl Send for Type {}
 
 impl Type {
     /// Whether the type contains the flag.
@@ -44,7 +54,17 @@ impl Type {
             TypeKind::None => NONE_TYPE_STR.to_string(),
             TypeKind::Any => ANY_TYPE_STR.to_string(),
             TypeKind::Bool => BOOL_TYPE_STR.to_string(),
-            TypeKind::BoolLit(v) => format!("{}({})", BOOL_TYPE_STR, v),
+            TypeKind::BoolLit(v) => {
+                format!(
+                    "{}({})",
+                    BOOL_TYPE_STR,
+                    if *v {
+                        NAME_CONSTANT_TRUE
+                    } else {
+                        NAME_CONSTANT_FALSE
+                    }
+                )
+            }
             TypeKind::Int => INT_TYPE_STR.to_string(),
             TypeKind::IntLit(v) => format!("{}({})", INT_TYPE_STR, v),
             TypeKind::Float => FLOAT_TYPE_STR.to_string(),
@@ -52,23 +72,34 @@ impl Type {
             TypeKind::Str => STR_TYPE_STR.to_string(),
             TypeKind::StrLit(v) => format!("{}({})", STR_TYPE_STR, v),
             TypeKind::List(item_ty) => format!("[{}]", item_ty.ty_str()),
-            TypeKind::Dict(key_ty, val_ty) => {
+            TypeKind::Dict(DictType { key_ty, val_ty, .. }) => {
                 format!("{{{}:{}}}", key_ty.ty_str(), val_ty.ty_str())
             }
             TypeKind::Union(types) => types
                 .iter()
                 .map(|ty| ty.ty_str())
                 .collect::<Vec<String>>()
-                .join("|"),
+                .join(" | "),
             TypeKind::Schema(schema_ty) => schema_ty.name.to_string(),
             TypeKind::NumberMultiplier(number_multiplier) => number_multiplier.ty_str(),
-            TypeKind::Function(_) => FUNCTION_TYPE_STR.to_string(),
+            TypeKind::Function(func_ty) => func_ty.ty_str(),
             TypeKind::Void => VOID_TYPE_STR.to_string(),
             TypeKind::Module(module_ty) => format!("{} '{}'", MODULE_TYPE_STR, module_ty.pkgpath),
             TypeKind::Named(name) => name.to_string(),
         }
     }
+
+    pub fn ty_doc(&self) -> Option<String> {
+        match &self.kind {
+            TypeKind::Schema(schema) => Some(schema.doc.clone()),
+            TypeKind::Function(func) => Some(func.doc.clone()),
+            _ => None,
+        }
+    }
 }
+
+unsafe impl Send for TypeKind {}
+unsafe impl Sync for TypeKind {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeKind {
@@ -93,11 +124,11 @@ pub enum TypeKind {
     /// A primitive string literal type.
     StrLit(String),
     /// The pointer of an array slice. Written as `[T]`.
-    List(Rc<Type>),
+    List(TypeRef),
     /// A map type. Written as `{kT, vT}`.
-    Dict(Rc<Type>, Rc<Type>),
+    Dict(DictType),
     /// A union type. Written as ty1 | ty2 | ... | tyn
-    Union(Vec<Rc<Type>>),
+    Union(Vec<TypeRef>),
     /// A schema type.
     Schema(SchemaType),
     /// A number multiplier type.
@@ -135,6 +166,19 @@ bitflags::bitflags! {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DictType {
+    pub key_ty: TypeRef,
+    pub val_ty: TypeRef,
+    pub attrs: IndexMap<String, Attr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Attr {
+    pub ty: TypeRef,
+    pub range: Range,
+}
+
 /// The schema type.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchemaType {
@@ -146,6 +190,8 @@ pub struct SchemaType {
     pub filename: String,
     /// The schema definition document string.
     pub doc: String,
+    /// The code snippets of the schema usage examples
+    pub examples: HashMap<String, Example>,
     /// Indicates whether the schema is a type of a instance or
     /// a type (value). Besides, it is necessary to distinguish
     /// between a type instance and a type value, such as the following code:
@@ -199,16 +245,18 @@ impl SchemaType {
         !self.is_instance && SCHEMA_MEMBER_FUNCTIONS.contains(&name)
     }
 
-    pub fn set_type_of_attr(&mut self, attr: &str, ty: Rc<Type>) {
+    pub fn set_type_of_attr(&mut self, attr: &str, ty: TypeRef) {
         match self.attrs.get_mut(attr) {
             Some(attr) => attr.ty = ty,
             None => {
                 let schema_attr = SchemaAttr {
                     is_optional: true,
                     has_default: false,
+                    default: None,
                     ty,
-                    pos: Position::dummy_pos(),
+                    range: (Position::dummy_pos(), Position::dummy_pos()),
                     doc: None,
+                    decorators: vec![],
                 };
                 self.attrs.insert(attr.to_string(), schema_attr);
             }
@@ -216,7 +264,7 @@ impl SchemaType {
     }
 
     #[inline]
-    pub fn get_type_of_attr(&self, attr: &str) -> Option<Rc<Type>> {
+    pub fn get_type_of_attr(&self, attr: &str) -> Option<TypeRef> {
         self.get_obj_of_attr(attr).map(|attr| attr.ty.clone())
     }
 
@@ -233,16 +281,38 @@ impl SchemaType {
         }
     }
 
-    pub fn key_ty(&self) -> Rc<Type> {
-        Rc::new(Type::STR)
+    pub fn key_ty(&self) -> TypeRef {
+        Arc::new(Type::STR)
     }
 
-    pub fn val_ty(&self) -> Rc<Type> {
+    pub fn val_ty(&self) -> TypeRef {
         if let Some(index_signature) = &self.index_signature {
             index_signature.val_ty.clone()
         } else {
-            Rc::new(Type::ANY)
+            Arc::new(Type::ANY)
         }
+    }
+
+    pub fn schema_ty_signature_str(&self) -> String {
+        let base: String = if let Some(base) = &self.base {
+            format!("({})", base.name)
+        } else {
+            "".to_string()
+        };
+        let params: String = if self.func.params.is_empty() {
+            "".to_string()
+        } else {
+            format!(
+                "[{}]",
+                self.func
+                    .params
+                    .iter()
+                    .map(|p| format!("{}: {}", p.name.clone(), p.ty.ty_str()))
+                    .collect::<Vec<String>>()
+                    .join(", ")
+            )
+        };
+        format!("{}\n\nschema {}{}{}", self.pkgpath, self.name, params, base)
     }
 }
 
@@ -250,16 +320,23 @@ impl SchemaType {
 pub struct SchemaAttr {
     pub is_optional: bool,
     pub has_default: bool,
-    pub ty: Rc<Type>,
-    pub pos: Position,
+    /// `default` denotes the schema attribute optional value string. For example,
+    /// for the schema attribute definition `name?: str = "Alice"`, the value of
+    /// `default` is [Some("Alice")].
+    /// For the schema attribute definition `name?: str`, the value of `default`
+    /// is [None].
+    pub default: Option<String>,
+    pub ty: TypeRef,
+    pub range: Range,
     pub doc: Option<String>,
+    pub decorators: Vec<Decorator>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchemaIndexSignature {
     pub key_name: Option<String>,
-    pub key_ty: Rc<Type>,
-    pub val_ty: Rc<Type>,
+    pub key_ty: TypeRef,
+    pub val_ty: TypeRef,
     pub any_other: bool,
 }
 
@@ -294,11 +371,16 @@ pub enum ModuleKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decorator {
+    /// The decorator target e.g., the schema statement or schema attribute.
     pub target: DecoratorTarget,
     /// The decorator name.
     pub name: String,
-    /// The schema or attribute name of decorator dimension
+    /// The schema or attribute name of decorator dimension.
     pub key: String,
+    /// The decorator argument list values.
+    pub arguments: Vec<String>,
+    /// The decorator keyword mapping values.
+    pub keywords: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -334,16 +416,57 @@ impl NumberMultiplierType {
 pub struct FunctionType {
     pub doc: String,
     pub params: Vec<Parameter>,
-    pub self_ty: Option<Rc<Type>>,
-    pub return_ty: Rc<Type>,
+    pub self_ty: Option<TypeRef>,
+    pub return_ty: TypeRef,
     pub is_variadic: bool,
     pub kw_only_index: Option<usize>,
+}
+
+impl FunctionType {
+    pub fn ty_str(&self) -> String {
+        format!(
+            "({}) -> {}",
+            self.params
+                .iter()
+                .map(|param| param.ty.ty_str())
+                .collect::<Vec<String>>()
+                .join(", "),
+            self.return_ty.ty_str()
+        )
+    }
+
+    pub fn func_signature_str(&self, name: &String) -> String {
+        format!(
+            "function {}({}) -> {}",
+            name,
+            self.params
+                .iter()
+                .map(|param| format!("{}: {}", param.name, param.ty.ty_str()))
+                .collect::<Vec<String>>()
+                .join(", "),
+            self.return_ty.ty_str()
+        )
+    }
+}
+
+impl FunctionType {
+    #[inline]
+    pub fn variadic_func() -> Self {
+        Self {
+            doc: "".to_string(),
+            params: vec![],
+            self_ty: None,
+            return_ty: Type::any_ref(),
+            is_variadic: true,
+            kw_only_index: None,
+        }
+    }
 }
 
 /// The function parameter.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parameter {
     pub name: String,
-    pub ty: Rc<Type>,
+    pub ty: TypeRef,
     pub has_default: bool,
 }

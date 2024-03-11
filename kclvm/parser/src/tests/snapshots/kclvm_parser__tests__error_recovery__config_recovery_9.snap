@@ -22,14 +22,19 @@ Node {
                                             end_line: 1,
                                             end_column: 2,
                                         },
-                                        op: Bin(
-                                            Mul,
-                                        ),
+                                        op: Mul,
                                         right: Node {
                                             node: Identifier(
                                                 Identifier {
                                                     names: [
-                                                        "a",
+                                                        Node {
+                                                            node: "a",
+                                                            filename: "",
+                                                            line: 1,
+                                                            column: 2,
+                                                            end_line: 1,
+                                                            end_column: 3,
+                                                        },
                                                     ],
                                                     pkgpath: "",
                                                     ctx: Load,
@@ -63,14 +68,19 @@ Node {
                                         end_line: 1,
                                         end_column: 7,
                                     },
-                                    op: Bin(
-                                        Pow,
-                                    ),
+                                    op: Pow,
                                     right: Node {
                                         node: Identifier(
                                             Identifier {
                                                 names: [
-                                                    "b",
+                                                    Node {
+                                                        node: "b",
+                                                        filename: "",
+                                                        line: 1,
+                                                        column: 7,
+                                                        end_line: 1,
+                                                        end_column: 8,
+                                                    },
                                                 ],
                                                 pkgpath: "",
                                                 ctx: Load,

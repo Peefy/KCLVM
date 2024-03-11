@@ -4,7 +4,9 @@
 //! input file name, and according to the ast::OverrideSpec transforms the nodes in the
 //! AST, recursively modifying or deleting the values of the nodes in the AST.
 pub mod r#override;
+pub mod path;
 pub mod query;
+pub mod selector;
 
 #[cfg(test)]
 mod tests;
@@ -83,7 +85,7 @@ pub fn override_file(file: &str, specs: &[String], import_paths: &[String]) -> R
         .collect::<Vec<ast::OverrideSpec>>();
     // Parse file to AST module.
     let mut module = match parse_file(file, None) {
-        Ok(module) => module,
+        Ok(module) => module.module,
         Err(msg) => return Err(anyhow!("{}", msg)),
     };
     let mut result = false;

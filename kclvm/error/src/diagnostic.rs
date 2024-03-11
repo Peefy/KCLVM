@@ -95,8 +95,8 @@ impl From<Loc> for Position {
 }
 
 impl Diagnostic {
-    pub fn new(level: Level, message: &str, pos: Position) -> Self {
-        Diagnostic::new_with_code(level, message, None, pos, None)
+    pub fn new(level: Level, message: &str, range: Range) -> Self {
+        Diagnostic::new_with_code(level, message, None, range, None, None)
     }
 
     /// New a diagnostic with error code.
@@ -104,16 +104,18 @@ impl Diagnostic {
         level: Level,
         message: &str,
         note: Option<&str>,
-        pos: Position,
+        range: Range,
         code: Option<DiagnosticId>,
+        suggestions: Option<Vec<String>>,
     ) -> Self {
         Diagnostic {
             level,
             messages: vec![Message {
-                pos,
+                range,
                 style: Style::LineAndColumn,
                 message: message.to_string(),
-                note: note.map(|s| s.to_string()),
+                note: note.map(String::from),
+                suggested_replacement: suggestions,
             }],
             code,
         }
@@ -125,18 +127,22 @@ impl Diagnostic {
     }
 }
 
+pub type Range = (Position, Position);
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Message {
-    pub pos: Position,
+    pub range: Range,
     pub style: Style,
     pub message: String,
     pub note: Option<String>,
+    pub suggested_replacement: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DiagnosticId {
     Error(ErrorKind),
     Warning(WarningKind),
+    Suggestions,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -144,6 +150,7 @@ pub enum Level {
     Error,
     Warning,
     Note,
+    Suggestions,
 }
 
 impl Level {
@@ -152,6 +159,7 @@ impl Level {
             Level::Error => "error",
             Level::Warning => "warning",
             Level::Note => "note",
+            Level::Suggestions => "suggestions",
         }
     }
 }

@@ -66,11 +66,12 @@
 //! ```
 use super::expr_builder::ExprBuilder;
 pub use crate::util::loader::LoaderKind;
+use anyhow::Result;
 use kclvm_ast::{
     ast::{AssignStmt, Expr, ExprContext, Identifier, Module, Node, NodeRef, SchemaStmt, Stmt},
     node_ref,
 };
-use kclvm_runner::execute_module;
+use kclvm_runner::{execute_module, MapErrorResult};
 
 const TMP_FILE: &str = "validationTempKCLCode.k";
 
@@ -170,13 +171,13 @@ const TMP_FILE: &str = "validationTempKCLCode.k";
 ///     "is_warning": false
 /// }
 /// ```
-pub fn validate(val_opt: ValidateOption) -> Result<bool, String> {
+pub fn validate(val_opt: ValidateOption) -> Result<bool> {
     let k_path = match val_opt.kcl_path {
         Some(path) => path,
         None => TMP_FILE.to_string(),
     };
 
-    let mut module = kclvm_parser::parse_file(&k_path, val_opt.kcl_code)?;
+    let mut module = kclvm_parser::parse_file_force_errors(&k_path, val_opt.kcl_code)?;
 
     let schemas = filter_schema_stmt(&module);
     let schema_name = match val_opt.schema_name {
@@ -185,29 +186,25 @@ pub fn validate(val_opt: ValidateOption) -> Result<bool, String> {
     };
 
     let expr_builder =
-        ExprBuilder::new_with_file_path(val_opt.validated_file_kind, val_opt.validated_file_path)
-            .map_err(|_| "Failed to load validated file.".to_string())?;
+        ExprBuilder::new_with_file_path(val_opt.validated_file_kind, val_opt.validated_file_path)?;
 
-    let validated_expr = expr_builder
-        .build(schema_name)
-        .map_err(|_| "Failed to load validated file.".to_string())?;
+    let validated_expr = expr_builder.build(schema_name)?;
 
     let assign_stmt = build_assign(&val_opt.attribute_name, validated_expr);
 
     module.body.insert(0, assign_stmt);
 
-    execute_module(module).map(|_| true)
+    execute_module(module).map_err_to_result().map(|_| true)
 }
 
 fn build_assign(attr_name: &str, node: NodeRef<Expr>) -> NodeRef<Stmt> {
     node_ref!(Stmt::Assign(AssignStmt {
         targets: vec![node_ref!(Identifier {
-            names: vec![attr_name.to_string()],
+            names: vec![Node::dummy_node(attr_name.to_string())],
             pkgpath: String::new(),
             ctx: ExprContext::Store,
         })],
         value: node,
-        type_annotation: None,
         ty: None,
     }))
 }

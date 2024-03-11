@@ -23,27 +23,37 @@ fn load_runtime(context: &'_ Context) -> Module<'_> {
 /// Generate LLVM IR of KCL ast module.
 pub fn emit_code(
     program: &ast::Program,
+    workdir: String,
     import_names: IndexMap<String, IndexMap<String, String>>,
-    opt: &EmitOptions,
+    opts: &EmitOptions,
 ) -> Result<(), Box<dyn error::Error>> {
     // Init LLVM targets
     LLVM_INIT.get_or_init(|| {
-        // TODO: linux arm and WASM target.
+        // TODO: WASM target.
         #[cfg(target_os = "linux")]
         inkwell::targets::Target::initialize_x86(&Default::default());
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        inkwell::targets::Target::initialize_aarch64(&Default::default());
         #[cfg(not(target_os = "linux"))]
         inkwell::targets::Target::initialize_all(&Default::default());
     });
     // Create a LLVM context
     let context = Context::create();
     // Create a LLVM module using an exist LLVM bitcode file
-    let module = if let Some(path) = &opt.from_path {
+    let module = if let Some(path) = &opts.from_path {
         Module::parse_bitcode_from_path(std::path::Path::new(path), &context).unwrap()
     } else {
         load_runtime(&context)
     };
     // Create a KCL LLVM code generator using the KCL AST and the LLVM module
-    let ctx = LLVMCodeGenContext::new(&context, module, program, import_names, opt.no_link);
+    let ctx = LLVMCodeGenContext::new(
+        &context,
+        module,
+        program,
+        import_names,
+        opts.no_link,
+        workdir,
+    );
     // Generate user KCL code LLVM IR
-    crate::codegen::emit_code(ctx, opt)
+    crate::codegen::emit_code(ctx, opts)
 }

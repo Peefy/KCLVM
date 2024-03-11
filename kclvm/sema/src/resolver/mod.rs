@@ -2,7 +2,7 @@ mod arg;
 mod attr;
 mod calculation;
 mod config;
-mod doc;
+pub mod doc;
 mod format;
 pub mod global;
 mod import;
@@ -11,27 +11,30 @@ mod node;
 mod para;
 mod schema;
 pub mod scope;
-mod ty;
+pub(crate) mod ty;
 mod ty_alias;
+mod ty_erasure;
 mod var;
 
 #[cfg(test)]
 mod tests;
 
 use indexmap::IndexMap;
+use kclvm_error::diagnostic::Range;
+use std::sync::{Arc, Mutex};
 use std::{cell::RefCell, rc::Rc};
 
 use crate::lint::{CombinedLintPass, Linter};
 use crate::pre_process::pre_process_program;
 use crate::resolver::scope::ScopeObject;
-use crate::resolver::ty_alias::process_program_type_alias;
+use crate::resolver::ty_alias::type_alias_pass;
+use crate::resolver::ty_erasure::type_func_erasure_pass;
+use crate::ty::TypeContext;
 use crate::{resolver::scope::Scope, ty::SchemaType};
 use kclvm_ast::ast::Program;
 use kclvm_error::*;
 
-use crate::ty::TypeContext;
-
-use self::scope::{builtin_scope, ProgramScope};
+use self::scope::{builtin_scope, CachedScope, NodeTyMap, ProgramScope};
 
 /// Resolver is responsible for program semantic checking, mainly
 /// including type checking and contract model checking.
@@ -40,6 +43,7 @@ pub struct Resolver<'ctx> {
     pub scope_map: IndexMap<String, Rc<RefCell<Scope>>>,
     pub scope: Rc<RefCell<Scope>>,
     pub scope_level: usize,
+    pub node_ty_map: NodeTyMap,
     pub builtin_scope: Rc<RefCell<Scope>>,
     pub ctx: Context,
     pub options: Options,
@@ -57,6 +61,7 @@ impl<'ctx> Resolver<'ctx> {
             builtin_scope,
             scope,
             scope_level: 0,
+            node_ty_map: IndexMap::default(),
             ctx: Context::default(),
             options,
             handler: Handler::default(),
@@ -65,13 +70,16 @@ impl<'ctx> Resolver<'ctx> {
     }
 
     /// The check main function.
-    pub(crate) fn check(&mut self, pkgpath: &str) -> ProgramScope {
+    pub(crate) fn check(&mut self, pkgpath: &str) {
         self.check_import(pkgpath);
         self.init_global_types();
         match self.program.pkgs.get(pkgpath) {
             Some(modules) => {
                 for module in modules {
                     self.ctx.filename = module.filename.to_string();
+                    if let scope::ScopeKind::Package(files) = &mut self.scope.borrow_mut().kind {
+                        files.insert(module.filename.to_string());
+                    }
                     for stmt in &module.body {
                         self.stmt(&stmt);
                     }
@@ -82,15 +90,16 @@ impl<'ctx> Resolver<'ctx> {
             }
             None => {}
         }
-        ProgramScope {
-            scope_map: self.scope_map.clone(),
-            import_names: self.ctx.import_names.clone(),
-            handler: self.handler.clone(),
-        }
     }
 
     pub(crate) fn check_and_lint(&mut self, pkgpath: &str) -> ProgramScope {
-        let mut scope = self.check(pkgpath);
+        self.check(pkgpath);
+        let mut scope = ProgramScope {
+            scope_map: self.scope_map.clone(),
+            import_names: self.ctx.import_names.clone(),
+            node_ty_map: self.node_ty_map.clone(),
+            handler: self.handler.clone(),
+        };
         self.lint_check_scope_map();
         for diag in &self.linter.handler.diagnostics {
             scope.handler.diagnostics.insert(diag.clone());
@@ -109,13 +118,13 @@ pub struct Context {
     /// What schema are we in.
     pub schema: Option<Rc<RefCell<SchemaType>>>,
     /// What schema are we in.
-    pub schema_mapping: IndexMap<String, Rc<RefCell<SchemaType>>>,
+    pub schema_mapping: IndexMap<String, Arc<RefCell<SchemaType>>>,
     /// For loop local vars.
     pub local_vars: Vec<String>,
     /// Import pkgpath and name
     pub import_names: IndexMap<String, IndexMap<String, String>>,
     /// Global names at top level of the program.
-    pub global_names: IndexMap<String, IndexMap<String, Position>>,
+    pub global_names: IndexMap<String, IndexMap<String, Range>>,
     /// Are we resolving the left value.
     pub l_value: bool,
     /// Are we resolving the statement start position.
@@ -132,28 +141,67 @@ pub struct Context {
     pub type_alias_mapping: IndexMap<String, IndexMap<String, String>>,
 }
 
-/// Resolve options
-#[derive(Clone, Debug, Default)]
+/// Resolve options.
+/// - lint_check: whether to run lint passes
+/// - resolve_val: whether to resolve and print their AST to value for some nodes.
+#[derive(Clone, Debug)]
 pub struct Options {
-    pub raise_err: bool,
-    pub config_auto_fix: bool,
     pub lint_check: bool,
+    pub resolve_val: bool,
+    pub merge_program: bool,
+    pub type_erasure: bool,
 }
 
-/// Resolve program
-pub fn resolve_program(program: &mut Program) -> ProgramScope {
-    pre_process_program(program);
-    let mut resolver = Resolver::new(
-        program,
-        Options {
-            raise_err: true,
-            config_auto_fix: false,
+impl Default for Options {
+    fn default() -> Self {
+        Self {
             lint_check: true,
-        },
-    );
+            resolve_val: false,
+            merge_program: true,
+            type_erasure: true,
+        }
+    }
+}
+
+/// Resolve program with default options.
+#[inline]
+pub fn resolve_program(program: &mut Program) -> ProgramScope {
+    resolve_program_with_opts(program, Options::default(), None)
+}
+
+/// Resolve program with options. See [Options]
+pub fn resolve_program_with_opts(
+    program: &mut Program,
+    opts: Options,
+    cached_scope: Option<Arc<Mutex<CachedScope>>>,
+) -> ProgramScope {
+    pre_process_program(program, &opts);
+    let mut resolver = Resolver::new(program, opts.clone());
     resolver.resolve_import();
+    if let Some(cached_scope) = cached_scope.as_ref() {
+        if let Ok(mut cached_scope) = cached_scope.try_lock() {
+            cached_scope.update(program);
+            resolver.scope_map = cached_scope.scope_map.clone();
+            resolver.scope_map.remove(kclvm_ast::MAIN_PKG);
+            resolver.node_ty_map = cached_scope.node_ty_map.clone()
+        }
+    }
     let scope = resolver.check_and_lint(kclvm_ast::MAIN_PKG);
-    let type_alias_mapping = resolver.ctx.type_alias_mapping.clone();
-    process_program_type_alias(program, type_alias_mapping);
+    if let Some(cached_scope) = cached_scope.as_ref() {
+        if let Ok(mut cached_scope) = cached_scope.try_lock() {
+            cached_scope.update(program);
+            cached_scope.scope_map = scope.scope_map.clone();
+            cached_scope.node_ty_map = scope.node_ty_map.clone();
+            cached_scope.scope_map.remove(kclvm_ast::MAIN_PKG);
+        }
+    }
+
+    if opts.type_erasure {
+        let type_alias_mapping = resolver.ctx.type_alias_mapping.clone();
+        // Erase all the function type to a named type "function"
+        type_func_erasure_pass(program);
+        // Erase types with their type alias
+        type_alias_pass(program, type_alias_mapping);
+    }
     scope
 }

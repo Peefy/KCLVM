@@ -1,19 +1,25 @@
-use regex::Regex;
-use std::collections::HashSet;
+use kclvm_ast::ast::SchemaStmt;
+use pcre2::bytes::Regex;
+use std::collections::{HashMap, HashSet};
 use std::iter::Iterator;
+use std::str;
+
+lazy_static::lazy_static! {
+    static ref RE: Regex = Regex::new(r#"(?s)^(['\"]{3})(.*?)(['\"]{3})$"#).unwrap();
+}
 
 /// strip leading and trailing triple quotes from the original docstring content
 fn strip_quotes(original: &mut String) {
     let quote = original.chars().next().unwrap();
-    let pattern = format!("(?s)^{char}{{3}}(.*?){char}{{3}}$", char = quote);
-    let re = Regex::new(&pattern).unwrap();
-    let caps = re.captures(&original);
-    let result = match caps {
-        Some(caps) => caps,
-        None => return,
-    };
-    let content = result[1].to_owned();
-    *original = content;
+    if quote != '"' && quote != '\'' {
+        return;
+    }
+    if let Ok(Some(mat)) = RE.find(original.as_bytes()) {
+        let content = str::from_utf8(&original.as_bytes()[mat.start() + 3..mat.end() - 3])
+            .unwrap()
+            .to_owned();
+        *original = content;
+    }
 }
 
 fn expand_tabs(s: &str, spaces_per_tab: usize) -> String {
@@ -35,10 +41,14 @@ fn clean_doc(doc: &mut String) {
             .unwrap_or(0);
 
         lines[1..].iter_mut().for_each(|line| {
-            *line = if line.len() > 0 {
-                &line[margin..]
+            *line = if line.trim().len() > 0 {
+                if let Some(sub) = line.get(margin..) {
+                    sub
+                } else {
+                    line.trim()
+                }
             } else {
-                line
+                line.trim()
             }; // remove command indentation
         });
 
@@ -212,9 +222,9 @@ fn parse_attr_list(content: String) -> Vec<Attribute> {
     while !r.eof() {
         let header = r.read();
         let header = header.trim();
-        if header.contains(" : ") {
-            let parts: Vec<&str> = header.split(" : ").collect();
-            let arg_name = parts[0];
+        if header.contains(": ") {
+            let parts: Vec<&str> = header.split(": ").collect();
+            let arg_name = parts[0].trim();
 
             let desc_lines = r
                 .read_to_next_unindented_line()
@@ -248,9 +258,9 @@ fn parse_summary(doc: &mut Reader) -> String {
 /// parse the schema docstring to Doc.
 /// The summary of the schema content will be concatenated to a single line string by whitespaces.
 /// The description of each attribute will be returned as separate lines.
-pub(crate) fn parse_doc_string(ori: &String) -> Doc {
+pub fn parse_doc_string(ori: &String) -> Doc {
     if ori.is_empty() {
-        return Doc::new("".to_string(), vec![]);
+        return Doc::new("".to_string(), vec![], HashMap::new());
     }
     let mut ori = ori.clone();
     strip_quotes(&mut ori);
@@ -265,25 +275,79 @@ pub(crate) fn parse_doc_string(ori: &String) -> Doc {
 
     let attrs = parse_attr_list(attr_content);
 
-    Doc::new(summary, attrs)
+    let mut examples = HashMap::new();
+    let example_section = read_to_next_section(&mut doc);
+    if !example_section.is_empty() {
+        let default_example_content = match example_section.len() {
+            0 | 1 | 2 => "".to_string(),
+            _ => example_section[2..].join("\n"),
+        };
+        examples.insert(
+            "Default example".to_string(),
+            Example::new("".to_string(), "".to_string(), default_example_content),
+        );
+    }
+    Doc::new(summary, attrs, examples)
 }
 
 /// The Doc struct contains a summary of schema and all the attributes described in the the docstring.
-#[derive(Debug)]
-pub(crate) struct Doc {
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Doc {
     pub summary: String,
     pub attrs: Vec<Attribute>,
+    pub examples: HashMap<String, Example>,
 }
 
 impl Doc {
-    fn new(summary: String, attrs: Vec<Attribute>) -> Self {
-        Self { summary, attrs }
+    pub fn new(summary: String, attrs: Vec<Attribute>, examples: HashMap<String, Example>) -> Self {
+        Self {
+            summary,
+            attrs,
+            examples,
+        }
+    }
+    pub fn new_from_schema_stmt(schema: &SchemaStmt) -> Self {
+        let attrs = schema
+            .get_left_identifier_list()
+            .iter()
+            .map(|(_, _, attr_name)| attr_name.clone())
+            .collect::<Vec<String>>();
+        Self {
+            summary: "".to_string(),
+            attrs: attrs
+                .iter()
+                .map(|name| Attribute::new(name.clone(), vec![]))
+                .collect(),
+            examples: HashMap::new(),
+        }
+    }
+
+    pub fn to_doc_string(self) -> String {
+        let summary = self.summary;
+        let attrs_string = self
+            .attrs
+            .iter()
+            .map(|attr| format!("{}: {}", attr.name, attr.desc.join("\n")))
+            .collect::<Vec<String>>()
+            .join("\n");
+        let examples_string = self
+            .examples
+            .values()
+            .map(|example| {
+                format!(
+                    "{}\n{}\n{}",
+                    example.summary, example.description, example.value
+                )
+            })
+            .collect::<Vec<String>>()
+            .join("\n");
+        format!("{summary}\n\nAttributes\n----------\n{attrs_string}\n\nExamples\n--------{examples_string}\n")
     }
 }
 
 /// The Attribute struct contains the attribute name and the corresponding description.
-#[derive(Debug)]
-pub(crate) struct Attribute {
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Attribute {
     pub name: String,
     pub desc: Vec<String>,
 }
@@ -294,10 +358,28 @@ impl Attribute {
     }
 }
 
+/// The Example struct contains the example summary and the literal content
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Example {
+    pub summary: String,
+    pub description: String,
+    pub value: String,
+}
+
+impl Example {
+    fn new(summary: String, description: String, value: String) -> Self {
+        Self {
+            summary,
+            description,
+            value,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{clean_doc, is_at_section, read_to_next_section, strip_quotes, Reader};
-    use crate::resolver::doc::parse_doc_string;
+    use crate::resolver::doc::{parse_doc_string, Example};
     use std::fs::File;
     use std::io::prelude::*;
     use std::path::PathBuf;
@@ -345,11 +427,11 @@ de",
         A Server-level attribute.
         The name of the long-running service.
         See also: kusion_models/core/v1/metadata.k.
-    labels : {str:str}, optional
+    labels: {str:str}, optional
         A Server-level attribute.
         The labels of the long-running service.
         See also: kusion_models/core/v1/metadata.k.
-
+  
     Examples
     ----------------------
     myCustomApp = AppConfiguration {
@@ -383,7 +465,7 @@ name : str, required
     A Server-level attribute.
     The name of the long-running service.
     See also: kusion_models/core/v1/metadata.k.
-labels : {str:str}, optional
+labels: {str:str}, optional
     A Server-level attribute.
     The labels of the long-running service.
     See also: kusion_models/core/v1/metadata.k.
@@ -576,6 +658,18 @@ unindented line
                 "The labels of the long-running service.".to_string(),
                 "See also: kusion_models/core/v1/metadata.k.".to_string(),
             ]
+        );
+        assert!(doc.examples.contains_key("Default example"));
+        assert_eq!(
+            doc.examples.get("Default example"),
+            Some(&Example::new(
+                "".to_string(),
+                "".to_string(),
+                "myCustomApp = AppConfiguration {
+    name = \"componentName\"
+}"
+                .to_string()
+            ))
         );
     }
 }

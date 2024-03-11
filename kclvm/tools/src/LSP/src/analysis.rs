@@ -1,6 +1,9 @@
 use crate::db::AnalysisDatabase;
+use parking_lot::RwLock;
+use ra_ap_vfs::FileId;
+use std::{collections::HashMap, sync::Arc};
 
 #[derive(Default)]
 pub struct Analysis {
-    _db: AnalysisDatabase,
+    pub db: Arc<RwLock<HashMap<FileId, AnalysisDatabase>>>,
 }

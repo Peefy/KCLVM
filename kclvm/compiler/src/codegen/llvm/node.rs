@@ -11,13 +11,15 @@ use inkwell::{AddressSpace, IntPredicate};
 use kclvm_ast::ast::{self, CallExpr, ConfigEntry, NodeRef};
 use kclvm_ast::walker::TypedResultWalker;
 use kclvm_runtime::{ApiFunc, PKG_PATH_PREFIX};
+use kclvm_sema::pkgpath_without_prefix;
+use kclvm_sema::ty::{ANY_TYPE_STR, STR_TYPE_STR};
 
+use crate::check_backtrack_stop;
 use crate::codegen::error as kcl_error;
 use crate::codegen::llvm::context::BacktrackMeta;
 use crate::codegen::llvm::utils;
 use crate::codegen::traits::*;
 use crate::codegen::{ENTRY_NAME, GLOBAL_LEVEL, INNER_LEVEL, PKG_INIT_FUNCTION_SUFFIX};
-use crate::{check_backtrack_stop, pkgpath_without_prefix};
 
 use super::context::{CompileResult, LLVMCodeGenContext};
 use crate::value;
@@ -72,19 +74,13 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
     fn walk_unification_stmt(&self, unification_stmt: &'ctx ast::UnificationStmt) -> Self::Result {
         check_backtrack_stop!(self);
         self.local_vars.borrow_mut().clear();
-        let name = &unification_stmt.target.node.names[0];
+        let name = &unification_stmt.target.node.names[0].node;
         self.target_vars.borrow_mut().push(name.clone());
         // The right value of the unification_stmt is a schema_expr.
         let value = self
             .walk_schema_expr(&unification_stmt.value.node)
             .expect(kcl_error::COMPILE_ERROR_MSG);
-        if self.scope_level() == GLOBAL_LEVEL
-            || *self
-                .lambda_stack
-                .borrow_mut()
-                .last()
-                .expect(kcl_error::INTERNAL_ERROR_MSG)
-        {
+        if self.scope_level() == GLOBAL_LEVEL || self.is_in_lambda() {
             if self.resolve_variable(name) {
                 let org_value = self
                     .walk_identifier_with_ctx(
@@ -94,7 +90,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                     )
                     .expect(kcl_error::COMPILE_ERROR_MSG);
                 let fn_name = ApiFunc::kclvm_value_op_aug_bit_or;
-                let value = self.build_call(&fn_name.name(), &[org_value, value]);
+                let value = self.build_call(
+                    &fn_name.name(),
+                    &[self.current_runtime_ctx_ptr(), org_value, value],
+                );
                 // Store the identifier value
                 self.walk_identifier_with_ctx(
                     &unification_stmt.target.node,
@@ -123,7 +122,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 )
                 .expect(kcl_error::COMPILE_ERROR_MSG);
             let fn_name = ApiFunc::kclvm_value_op_bit_or;
-            let value = self.build_call(&fn_name.name(), &[org_value, value]);
+            let value = self.build_call(
+                &fn_name.name(),
+                &[self.current_runtime_ctx_ptr(), org_value, value],
+            );
             // Store the identifier value
             self.walk_identifier_with_ctx(
                 &unification_stmt.target.node,
@@ -147,19 +149,24 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
         for name in &assign_stmt.targets {
             self.target_vars
                 .borrow_mut()
-                .push(name.node.names[0].clone());
+                .push(name.node.names[0].node.clone());
         }
         // Load the right value
         let mut value = self
             .walk_expr(&assign_stmt.value)
             .expect(kcl_error::COMPILE_ERROR_MSG);
-        if let Some(type_annotation) = &assign_stmt.type_annotation {
-            let type_annotation = self.native_global_string_value(&type_annotation.node);
+        if let Some(ty) = &assign_stmt.ty {
+            let type_annotation = self.native_global_string_value(&ty.node.to_string());
             let is_in_schema =
                 self.schema_stack.borrow().len() > 0 || self.schema_expr_stack.borrow().len() > 0;
             value = self.build_call(
                 &ApiFunc::kclvm_convert_collection_value.name(),
-                &[value, type_annotation, self.bool_value(is_in_schema)],
+                &[
+                    self.current_runtime_ctx_ptr(),
+                    value,
+                    type_annotation,
+                    self.bool_value(is_in_schema),
+                ],
             );
         }
         if assign_stmt.targets.len() == 1 {
@@ -181,7 +188,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
         check_backtrack_stop!(self);
         self.target_vars
             .borrow_mut()
-            .push(aug_assign_stmt.target.node.names[0].clone());
+            .push(aug_assign_stmt.target.node.names[0].node.clone());
         // Load the right value
         let right_value = self
             .walk_expr(&aug_assign_stmt.value)
@@ -207,7 +214,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 return Err(kcl_error::KCLError::new(kcl_error::INVALID_OPERATOR_MSG));
             }
         };
-        let value = self.build_call(&fn_name.name(), &[org_value, right_value]);
+        let value = self.build_call(
+            &fn_name.name(),
+            &[self.current_runtime_ctx_ptr(), org_value, right_value],
+        );
         // Store the identifier value
         self.walk_identifier_with_ctx(
             &aug_assign_stmt.target.node,
@@ -240,10 +250,13 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 self.string_value("")
             }
         };
-        self.build_void_call(&ApiFunc::kclvm_assert.name(), &[assert_result, msg]);
+        self.build_void_call(
+            &ApiFunc::kclvm_assert.name(),
+            &[self.current_runtime_ctx_ptr(), assert_result, msg],
+        );
         self.br(end_block);
         self.builder.position_at_end(end_block);
-        self.ok_result()
+        Ok(self.undefined_value())
     }
 
     fn walk_if_stmt(&self, if_stmt: &'ctx ast::IfStmt) -> Self::Result {
@@ -269,7 +282,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
     }
     fn walk_import_stmt(&self, import_stmt: &'ctx ast::ImportStmt) -> Self::Result {
         check_backtrack_stop!(self);
-        let pkgpath = import_stmt.path.as_str();
+        let pkgpath = import_stmt.path.node.as_str();
         {
             let imported = self.imported.borrow_mut();
             if imported.contains(pkgpath) {
@@ -283,10 +296,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             // Nothing to do on the builtin system module import because the check has been done.
             return self.ok_result();
         } else {
-            let pkgpath = format!("{}{}", PKG_PATH_PREFIX, import_stmt.path);
+            let pkgpath = format!("{}{}", PKG_PATH_PREFIX, import_stmt.path.node);
             self.pkgpath_stack.borrow_mut().push(pkgpath);
-            let pkgpath = format!("{}{}", PKG_PATH_PREFIX, import_stmt.path);
-            let has_pkgpath = self.program.pkgs.contains_key(&import_stmt.path);
+            let pkgpath = format!("{}{}", PKG_PATH_PREFIX, import_stmt.path.node);
+            let has_pkgpath = self.program.pkgs.contains_key(&import_stmt.path.node);
             let func_before_block = if self.no_link {
                 if has_pkgpath {
                     let func_before_block = self.append_block("");
@@ -327,7 +340,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 for ast_module in self
                     .program
                     .pkgs
-                    .get(&import_stmt.path)
+                    .get(&import_stmt.path.node)
                     .expect(kcl_error::INTERNAL_ERROR_MSG)
                 {
                     {
@@ -343,7 +356,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 for ast_module in self
                     .program
                     .pkgs
-                    .get(&import_stmt.path)
+                    .get(&import_stmt.path.node)
                     .expect(kcl_error::INTERNAL_ERROR_MSG)
                 {
                     {
@@ -381,12 +394,12 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                     let fn_type = tpe.fn_type(&[self.context_ptr_type().into()], false);
                     module.add_function(&name, fn_type, Some(Linkage::External))
                 };
-                let ctx = self.global_ctx_ptr();
+                let ctx = self.current_runtime_ctx_ptr();
                 let pkgpath_value = self.native_global_string_value(&name);
                 let is_imported = self
                     .build_call(
                         &ApiFunc::kclvm_context_pkgpath_is_imported.name(),
-                        &[pkgpath_value],
+                        &[self.current_runtime_ctx_ptr(), pkgpath_value],
                     )
                     .into_int_value();
                 let is_not_imported = self.builder.build_int_compare(
@@ -443,7 +456,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
         self.builder.position_at_end(block);
         self.build_void_call(
             &ApiFunc::kclvm_context_set_kcl_filename.name(),
-            &[self.native_global_string_value(filename)],
+            &[
+                self.current_runtime_ctx_ptr(),
+                self.native_global_string_value(filename),
+            ],
         );
         utils::update_ctx_pkgpath(self, schema_pkgpath);
         let args = function
@@ -514,7 +530,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                     CallableValue::try_from(func_ptr_cast.into_pointer_value())
                         .expect(kcl_error::INTERNAL_ERROR_MSG),
                     &[
-                        self.global_ctx_ptr().into(),
+                        self.current_runtime_ctx_ptr().into(),
                         list_value.into(),
                         dict_value.into(),
                     ],
@@ -529,13 +545,17 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
         if schema_stmt.parent_name.is_some() {
             self.build_void_call(
                 &ApiFunc::kclvm_context_set_kcl_filename.name(),
-                &[self.native_global_string_value(filename)],
+                &[
+                    self.current_runtime_ctx_ptr(),
+                    self.native_global_string_value(filename),
+                ],
             );
         }
         self.schema_stack.borrow_mut().push(schema);
         add_variable(value::SCHEMA_SELF_NAME, schema_value);
-        self.emit_schema_left_identifiers(
+        self.emit_left_identifiers(
             &schema_stmt.body,
+            &schema_stmt.index_signature,
             cal_map,
             &runtime_type,
             false,
@@ -557,12 +577,14 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             self.walk_decorator_with_name(&decorator.node, Some(schema_name), true)
                 .expect(kcl_error::COMPILE_ERROR_MSG);
         }
-        // Append schema default settings
+        // Append schema default settings, args, kwargs and runtime type.
         self.build_void_call(
             &ApiFunc::kclvm_schema_default_settings.name(),
             &[
                 schema_value,
                 schema_config,
+                args,
+                kwargs,
                 self.native_global_string_value(&runtime_type),
             ],
         );
@@ -596,7 +618,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 CallableValue::try_from(func_ptr_cast.into_pointer_value())
                     .expect(kcl_error::INTERNAL_ERROR_MSG),
                 &[
-                    self.global_ctx_ptr().into(),
+                    self.current_runtime_ctx_ptr().into(),
                     list_value.into(),
                     dict_value.into(),
                 ],
@@ -604,7 +626,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             );
             self.build_void_call(
                 &ApiFunc::kclvm_context_set_kcl_filename.name(),
-                &[self.native_global_string_value(filename)],
+                &[
+                    self.current_runtime_ctx_ptr(),
+                    self.native_global_string_value(filename),
+                ],
             );
         }
         // Schema Attribute optional check
@@ -648,7 +673,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 self.builder.build_call(
                     check_function,
                     &[
-                        self.global_ctx_ptr().into(),
+                        self.current_runtime_ctx_ptr().into(),
                         list_value.into(),
                         dict_value.into(),
                     ],
@@ -667,7 +692,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                         .name()
                         .as_str(),
                     &[
-                        self.global_ctx_ptr(),
+                        self.current_runtime_ctx_ptr(),
                         list_value,
                         dict_value,
                         check_lambda_fn_ptr,
@@ -682,6 +707,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
         let schema_value = self.build_call(
             &ApiFunc::kclvm_value_schema_with_config.name(),
             &[
+                self.current_runtime_ctx_ptr(),
                 schema_value,
                 schema_config,
                 schema_config_meta,
@@ -691,6 +717,8 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 record_instance,
                 instance_pkgpath,
                 attr_optional_mapping,
+                args,
+                kwargs,
             ],
         );
         // Schema constructor function returns a schema
@@ -743,16 +771,20 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 self.build_void_call(
                     &ApiFunc::kclvm_schema_value_check.name(),
                     &[
+                        self.current_runtime_ctx_ptr(),
                         schema_value,
                         schema_config,
                         schema_config_meta,
                         schema_name_native_str,
                         index_sign_value,
                         key_name_str_ptr.into(),
-                        self.native_global_string(index_signature.node.key_type.node.as_str(), "")
-                            .into(),
                         self.native_global_string(
-                            index_signature.node.value_type.node.as_str(),
+                            index_signature.node.key_ty.node.to_string().as_str(),
+                            "",
+                        )
+                        .into(),
+                        self.native_global_string(
+                            index_signature.node.value_ty.node.to_string().as_str(),
                             "",
                         )
                         .into(),
@@ -763,6 +795,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 self.build_void_call(
                     &ApiFunc::kclvm_schema_value_check.name(),
                     &[
+                        self.current_runtime_ctx_ptr(),
                         schema_value,
                         schema_config,
                         schema_config_meta,
@@ -800,7 +833,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                     CallableValue::try_from(func_ptr_cast.into_pointer_value())
                         .expect(kcl_error::INTERNAL_ERROR_MSG),
                     &[
-                        self.global_ctx_ptr().into(),
+                        self.current_runtime_ctx_ptr().into(),
                         list_value.into(),
                         dict_value.into(),
                     ],
@@ -808,7 +841,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 );
                 self.build_void_call(
                     &ApiFunc::kclvm_context_set_kcl_filename.name(),
-                    &[self.native_global_string_value(filename)],
+                    &[
+                        self.current_runtime_ctx_ptr(),
+                        self.native_global_string_value(filename),
+                    ],
                 );
             }
             // Call self check function
@@ -841,7 +877,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                     CallableValue::try_from(func_ptr_cast.into_pointer_value())
                         .expect(kcl_error::INTERNAL_ERROR_MSG),
                     &[
-                        self.global_ctx_ptr().into(),
+                        self.current_runtime_ctx_ptr().into(),
                         list_value.into(),
                         dict_value.into(),
                     ],
@@ -849,7 +885,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 );
                 self.build_void_call(
                     &ApiFunc::kclvm_context_set_kcl_filename.name(),
-                    &[self.native_global_string_value(filename)],
+                    &[
+                        self.current_runtime_ctx_ptr(),
+                        self.native_global_string_value(filename),
+                    ],
                 );
             }
             self.builder.build_return(Some(&schema_value));
@@ -858,8 +897,11 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
         }
         // Build schema attr backtrack functions
         {
-            for (k, functions) in place_holder_map {
-                let stmt_list = body_map.get(&k).expect(kcl_error::INTERNAL_ERROR_MSG);
+            for (k, functions) in &place_holder_map {
+                if k == kclvm_runtime::CAL_MAP_INDEX_SIGNATURE {
+                    continue;
+                }
+                let stmt_list = body_map.get(k).expect(kcl_error::INTERNAL_ERROR_MSG);
                 let mut if_level = 0;
                 for (attr_func, stmt) in functions.iter().zip(stmt_list) {
                     let function = *attr_func;
@@ -898,7 +940,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                     add_variable(value::SCHEMA_RUNTIME_TYPE, self.string_value(&runtime_type));
                     self.build_void_call(
                         &ApiFunc::kclvm_context_set_kcl_filename.name(),
-                        &[self.native_global_string_value(filename)],
+                        &[
+                            self.current_runtime_ctx_ptr(),
+                            self.native_global_string_value(filename),
+                        ],
                     );
                     let schema = self
                         .schema_stack
@@ -919,7 +964,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                     } else {
                         if_level = 0;
                     }
-                    self.walk_stmt(*stmt).expect(kcl_error::COMPILE_ERROR_MSG);
+                    self.walk_stmt(stmt).expect(kcl_error::COMPILE_ERROR_MSG);
                     // Backtrack meta end
                     if matches!(&stmt.node, ast::Stmt::If(..)) {
                         *self.backtrack_meta.borrow_mut() = None
@@ -933,7 +978,11 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 }
             }
         }
-        let function = self.struct_function_value(&[function, check_function], &runtime_type);
+        let function = self.struct_function_value(
+            &[function, check_function],
+            &place_holder_map,
+            &runtime_type,
+        );
         self.leave_scope();
         self.pop_function();
         self.schema_stack.borrow_mut().pop();
@@ -974,7 +1023,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
         self.builder.position_at_end(block);
         self.build_void_call(
             &ApiFunc::kclvm_context_set_kcl_filename.name(),
-            &[self.native_global_string_value(filename)],
+            &[
+                self.current_runtime_ctx_ptr(),
+                self.native_global_string_value(filename),
+            ],
         );
         let args = function
             .get_nth_param(1)
@@ -1037,12 +1089,13 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             );
             let fn_ty = self.function_type().ptr_type(AddressSpace::default());
             let func_ptr_cast = self.builder.build_bitcast(func_ptr, fn_ty, "");
-            self.builder
+            let schema_value = self
+                .builder
                 .build_call(
                     CallableValue::try_from(func_ptr_cast.into_pointer_value())
                         .expect(kcl_error::INTERNAL_ERROR_MSG),
                     &[
-                        self.global_ctx_ptr().into(),
+                        self.current_runtime_ctx_ptr().into(),
                         list_value.into(),
                         dict_value.into(),
                     ],
@@ -1050,7 +1103,25 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 )
                 .try_as_basic_value()
                 .left()
-                .expect(kcl_error::FUNCTION_RETURN_VALUE_NOT_FOUND_MSG)
+                .expect(kcl_error::FUNCTION_RETURN_VALUE_NOT_FOUND_MSG);
+            let protocol_name_native_str =
+                self.native_global_string_value(&for_host_name.node.get_name());
+            self.build_void_call(
+                &ApiFunc::kclvm_schema_value_check.name(),
+                &[
+                    self.current_runtime_ctx_ptr(),
+                    schema_value,
+                    schema_config,
+                    schema_config_meta,
+                    protocol_name_native_str,
+                    self.undefined_value(),
+                    self.native_global_string("", "").into(),
+                    self.native_global_string(STR_TYPE_STR, "").into(),
+                    self.native_global_string(ANY_TYPE_STR, "").into(),
+                    self.native_i8(1).into(),
+                ],
+            );
+            schema_value
         } else {
             schema_value
         };
@@ -1086,7 +1157,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             self.builder.build_call(
                 check_function,
                 &[
-                    self.global_ctx_ptr().into(),
+                    self.current_runtime_ctx_ptr().into(),
                     list_value.into(),
                     dict_value.into(),
                 ],
@@ -1155,7 +1226,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                     CallableValue::try_from(func_ptr_cast.into_pointer_value())
                         .expect(kcl_error::INTERNAL_ERROR_MSG),
                     &[
-                        self.global_ctx_ptr().into(),
+                        self.current_runtime_ctx_ptr().into(),
                         list_value.into(),
                         dict_value.into(),
                     ],
@@ -1171,7 +1242,8 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             self.builder.position_at_end(func_before_block);
             self.pop_function();
         }
-        let function = self.struct_function_value(&[function, check_function], &runtime_type);
+        let function =
+            self.struct_function_value(&[function, check_function], &HashMap::new(), &runtime_type);
         self.leave_scope();
         self.pop_function();
         self.schema_stack.borrow_mut().pop();
@@ -1281,14 +1353,14 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
         {
             let mut local_vars = self.local_vars.borrow_mut();
             for v in variables {
-                let name = &v.node.names[0];
+                let name = &v.node.names[0].node;
                 local_vars.insert(name.clone());
             }
         }
         if variables.len() == 1 {
             // Store the target
             self.walk_identifier_with_ctx(
-                &variables.get(0).expect(kcl_error::INTERNAL_ERROR_MSG).node,
+                &variables.first().expect(kcl_error::INTERNAL_ERROR_MSG).node,
                 &ast::ExprContext::Store,
                 Some(next_value),
             )
@@ -1297,7 +1369,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             let value = self.build_call(&ApiFunc::kclvm_iterator_cur_value.name(), &[iter_value]);
             // Store the target
             self.walk_identifier_with_ctx(
-                &variables.get(0).expect(kcl_error::INTERNAL_ERROR_MSG).node,
+                &variables.first().expect(kcl_error::INTERNAL_ERROR_MSG).node,
                 &ast::ExprContext::Store,
                 Some(key),
             )
@@ -1382,10 +1454,6 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             self.walk_decorator_with_name(&decorator.node, Some(name), false)
                 .expect(kcl_error::COMPILE_ERROR_MSG);
         }
-        let value = match &schema_attr.value {
-            Some(value) => self.walk_expr(value).expect(kcl_error::COMPILE_ERROR_MSG),
-            None => self.undefined_value(),
-        };
         let config_value = self
             .get_variable(value::SCHEMA_CONFIG_NAME)
             .expect(kcl_error::INTERNAL_ERROR_MSG);
@@ -1394,28 +1462,12 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             .expect(kcl_error::INTERNAL_ERROR_MSG);
         let string_ptr_value = self.native_global_string(name, "").into();
         let type_str_ptr_value = self
-            .native_global_string(&schema_attr.type_str.node, "")
+            .native_global_string(&schema_attr.ty.node.to_string(), "")
             .into();
         self.build_void_call(
             &ApiFunc::kclvm_config_attr_map.name(),
             &[schema_value, string_ptr_value, type_str_ptr_value],
         );
-        if let Some(op) = &schema_attr.op {
-            match op {
-                // Union
-                ast::BinOrAugOp::Aug(ast::AugOp::BitOr) => {
-                    let org_value = self.build_call(
-                        &ApiFunc::kclvm_dict_get_value.name(),
-                        &[schema_value, string_ptr_value],
-                    );
-                    let fn_name = ApiFunc::kclvm_value_op_bit_or;
-                    let value = self.build_call(&fn_name.name(), &[org_value, value]);
-                    self.dict_merge(schema_value, name, value, 1, -1);
-                }
-                // Assign
-                _ => self.dict_merge(schema_value, name, value, 1, -1),
-            }
-        }
         let has_key = self
             .build_call(
                 &ApiFunc::kclvm_dict_has_value.name(),
@@ -1427,13 +1479,69 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 .build_int_compare(IntPredicate::NE, has_key, self.native_i8_zero(), "");
         let then_block = self.append_block("");
         let else_block = self.append_block("");
+        let end_block = self.append_block("");
         self.builder
             .build_conditional_branch(has_key, then_block, else_block);
         self.builder.position_at_end(then_block);
         let config_attr_value = self.build_call(
             &ApiFunc::kclvm_dict_get_entry.name(),
-            &[config_value, string_ptr_value],
+            &[
+                self.current_runtime_ctx_ptr(),
+                config_value,
+                string_ptr_value,
+            ],
         );
+        // If the attribute operator is not `=`, eval the schema attribute value.
+        // if is_not_override:
+        let is_override_attr = self
+            .build_call(
+                &ApiFunc::kclvm_dict_is_override_attr.name(),
+                &[config_value, string_ptr_value],
+            )
+            .into_int_value();
+        let is_not_override_attr = self.builder.build_int_compare(
+            IntPredicate::EQ,
+            is_override_attr,
+            self.native_i8_zero(),
+            "",
+        );
+        let is_not_override_then_block = self.append_block("");
+        let is_not_override_else_block = self.append_block("");
+        self.builder.build_conditional_branch(
+            is_not_override_attr,
+            is_not_override_then_block,
+            is_not_override_else_block,
+        );
+        self.builder.position_at_end(is_not_override_then_block);
+        let value = match &schema_attr.value {
+            Some(value) => self.walk_expr(value).expect(kcl_error::COMPILE_ERROR_MSG),
+            None => self.undefined_value(),
+        };
+        if let Some(op) = &schema_attr.op {
+            match op {
+                // Union
+                ast::AugOp::BitOr => {
+                    let org_value = self.build_call(
+                        &ApiFunc::kclvm_dict_get_value.name(),
+                        &[
+                            self.current_runtime_ctx_ptr(),
+                            schema_value,
+                            string_ptr_value,
+                        ],
+                    );
+                    let fn_name = ApiFunc::kclvm_value_op_bit_or;
+                    let value = self.build_call(
+                        &fn_name.name(),
+                        &[self.current_runtime_ctx_ptr(), org_value, value],
+                    );
+                    self.dict_merge(schema_value, name, value, 1, -1);
+                }
+                // Assign
+                _ => self.dict_merge(schema_value, name, value, 1, -1),
+            }
+        }
+        self.br(is_not_override_else_block);
+        self.builder.position_at_end(is_not_override_else_block);
         self.value_union(schema_value, config_attr_value);
         let cal_map = self
             .get_variable(value::SCHEMA_CAL_MAP)
@@ -1447,6 +1555,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
         self.build_void_call(
             &ApiFunc::kclvm_schema_backtrack_cache.name(),
             &[
+                self.current_runtime_ctx_ptr(),
                 schema_value,
                 backtrack_cache,
                 cal_map,
@@ -1467,8 +1576,38 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 }
             }
         }
-        self.br(else_block);
+        self.br(end_block);
         self.builder.position_at_end(else_block);
+        // Lazy eval for the schema attribute.
+        let value = match &schema_attr.value {
+            Some(value) => self.walk_expr(value).expect(kcl_error::COMPILE_ERROR_MSG),
+            None => self.undefined_value(),
+        };
+        if let Some(op) = &schema_attr.op {
+            match op {
+                // Union
+                ast::AugOp::BitOr => {
+                    let org_value = self.build_call(
+                        &ApiFunc::kclvm_dict_get_value.name(),
+                        &[
+                            self.current_runtime_ctx_ptr(),
+                            schema_value,
+                            string_ptr_value,
+                        ],
+                    );
+                    let fn_name = ApiFunc::kclvm_value_op_bit_or;
+                    let value = self.build_call(
+                        &fn_name.name(),
+                        &[self.current_runtime_ctx_ptr(), org_value, value],
+                    );
+                    self.dict_merge(schema_value, name, value, 1, -1);
+                }
+                // Assign
+                _ => self.dict_merge(schema_value, name, value, 1, -1),
+            }
+        }
+        self.br(end_block);
+        self.builder.position_at_end(end_block);
         Ok(schema_value)
     }
 
@@ -1522,16 +1661,13 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             ast::UnaryOp::Invert => ApiFunc::kclvm_value_unary_not,
             ast::UnaryOp::Not => ApiFunc::kclvm_value_unary_l_not,
         };
-        Ok(self.build_call(&fn_name.name(), &[value]))
+        Ok(self.build_call(&fn_name.name(), &[self.current_runtime_ctx_ptr(), value]))
     }
 
     fn walk_binary_expr(&self, binary_expr: &'ctx ast::BinaryExpr) -> Self::Result {
         check_backtrack_stop!(self);
-        let is_logic_op = matches!(
-            binary_expr.op,
-            ast::BinOrCmpOp::Bin(ast::BinOp::And) | ast::BinOrCmpOp::Bin(ast::BinOp::Or)
-        );
-        let is_membership_as_op = matches!(binary_expr.op, ast::BinOrCmpOp::Bin(ast::BinOp::As));
+        let is_logic_op = matches!(binary_expr.op, ast::BinOp::And | ast::BinOp::Or);
+        let is_membership_as_op = matches!(binary_expr.op, ast::BinOp::As);
         if !is_logic_op {
             let left_value = self
                 .walk_expr(&binary_expr.left)
@@ -1539,7 +1675,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             let right_value = if is_membership_as_op {
                 match &binary_expr.right.node {
                     ast::Expr::Identifier(id) => {
-                        let name = id.names.join(".");
+                        let name = id.get_names().join(".");
                         self.string_value(&name)
                     }
                     _ => self.none_value(),
@@ -1549,50 +1685,25 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                     .expect(kcl_error::COMPILE_ERROR_MSG)
             };
             let value = match binary_expr.op {
-                ast::BinOrCmpOp::Bin(ast::BinOp::Add) => self.add(left_value, right_value),
-                ast::BinOrCmpOp::Bin(ast::BinOp::Sub) => self.sub(left_value, right_value),
-                ast::BinOrCmpOp::Bin(ast::BinOp::Mul) => self.mul(left_value, right_value),
-                ast::BinOrCmpOp::Bin(ast::BinOp::Div) => self.div(left_value, right_value),
-                ast::BinOrCmpOp::Bin(ast::BinOp::FloorDiv) => {
-                    self.floor_div(left_value, right_value)
-                }
-                ast::BinOrCmpOp::Bin(ast::BinOp::Mod) => self.r#mod(left_value, right_value),
-                ast::BinOrCmpOp::Bin(ast::BinOp::Pow) => self.pow(left_value, right_value),
-                ast::BinOrCmpOp::Bin(ast::BinOp::LShift) => {
-                    self.bit_lshift(left_value, right_value)
-                }
-                ast::BinOrCmpOp::Bin(ast::BinOp::RShift) => {
-                    self.bit_rshift(left_value, right_value)
-                }
-                ast::BinOrCmpOp::Bin(ast::BinOp::BitAnd) => self.bit_and(left_value, right_value),
-                ast::BinOrCmpOp::Bin(ast::BinOp::BitOr) => self.bit_or(left_value, right_value),
-                ast::BinOrCmpOp::Bin(ast::BinOp::BitXor) => self.bit_xor(left_value, right_value),
-                ast::BinOrCmpOp::Bin(ast::BinOp::And) => self.logic_and(left_value, right_value),
-                ast::BinOrCmpOp::Bin(ast::BinOp::Or) => self.logic_or(left_value, right_value),
-                ast::BinOrCmpOp::Bin(ast::BinOp::As) => self.r#as(left_value, right_value),
-                ast::BinOrCmpOp::Cmp(ast::CmpOp::Eq) => self.cmp_equal_to(left_value, right_value),
-                ast::BinOrCmpOp::Cmp(ast::CmpOp::NotEq) => {
-                    self.cmp_not_equal_to(left_value, right_value)
-                }
-                ast::BinOrCmpOp::Cmp(ast::CmpOp::Gt) => {
-                    self.cmp_greater_than(left_value, right_value)
-                }
-                ast::BinOrCmpOp::Cmp(ast::CmpOp::GtE) => {
-                    self.cmp_greater_than_or_equal(left_value, right_value)
-                }
-                ast::BinOrCmpOp::Cmp(ast::CmpOp::Lt) => self.cmp_less_than(left_value, right_value),
-                ast::BinOrCmpOp::Cmp(ast::CmpOp::LtE) => {
-                    self.cmp_less_than_or_equal(left_value, right_value)
-                }
-                ast::BinOrCmpOp::Cmp(ast::CmpOp::Is) => self.is(left_value, right_value),
-                ast::BinOrCmpOp::Cmp(ast::CmpOp::IsNot) => self.is_not(left_value, right_value),
-                ast::BinOrCmpOp::Cmp(ast::CmpOp::Not) => self.is_not(left_value, right_value),
-                ast::BinOrCmpOp::Cmp(ast::CmpOp::NotIn) => self.not_in(left_value, right_value),
-                ast::BinOrCmpOp::Cmp(ast::CmpOp::In) => self.r#in(left_value, right_value),
+                ast::BinOp::Add => self.add(left_value, right_value),
+                ast::BinOp::Sub => self.sub(left_value, right_value),
+                ast::BinOp::Mul => self.mul(left_value, right_value),
+                ast::BinOp::Div => self.div(left_value, right_value),
+                ast::BinOp::FloorDiv => self.floor_div(left_value, right_value),
+                ast::BinOp::Mod => self.r#mod(left_value, right_value),
+                ast::BinOp::Pow => self.pow(left_value, right_value),
+                ast::BinOp::LShift => self.bit_lshift(left_value, right_value),
+                ast::BinOp::RShift => self.bit_rshift(left_value, right_value),
+                ast::BinOp::BitAnd => self.bit_and(left_value, right_value),
+                ast::BinOp::BitOr => self.bit_or(left_value, right_value),
+                ast::BinOp::BitXor => self.bit_xor(left_value, right_value),
+                ast::BinOp::And => self.logic_and(left_value, right_value),
+                ast::BinOp::Or => self.logic_or(left_value, right_value),
+                ast::BinOp::As => self.r#as(left_value, right_value),
             };
             Ok(value)
         } else {
-            let jump_if_false = matches!(binary_expr.op, ast::BinOrCmpOp::Bin(ast::BinOp::And));
+            let jump_if_false = matches!(binary_expr.op, ast::BinOp::And);
             let start_block = self.append_block("");
             let value_block = self.append_block("");
             let end_block = self.append_block("");
@@ -1634,19 +1745,22 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             .walk_expr(&selector_expr.value)
             .expect(kcl_error::COMPILE_ERROR_MSG);
         let string_ptr_value = self
-            .native_global_string(selector_expr.attr.node.names[0].as_str(), "")
+            .native_global_string(selector_expr.attr.node.names[0].node.as_str(), "")
             .into();
         let fn_name = if selector_expr.has_question {
             &ApiFunc::kclvm_value_load_attr_option
         } else {
             &ApiFunc::kclvm_value_load_attr
         };
-        value = self.build_call(&fn_name.name(), &[value, string_ptr_value]);
+        value = self.build_call(
+            &fn_name.name(),
+            &[self.current_runtime_ctx_ptr(), value, string_ptr_value],
+        );
         for name in &selector_expr.attr.node.names[1..] {
-            let string_ptr_value = self.native_global_string(name, "").into();
+            let string_ptr_value = self.native_global_string(&name.node, "").into();
             value = self.build_call(
                 &ApiFunc::kclvm_value_load_attr.name(),
-                &[value, string_ptr_value],
+                &[self.current_runtime_ctx_ptr(), value, string_ptr_value],
             );
         }
         Ok(value)
@@ -1672,7 +1786,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             } else {
                 self.none_value()
             };
-            self.dict_insert(dict_value, name.as_str(), value, 0, -1);
+            self.dict_insert(dict_value, name.node.as_str(), value, 0, -1);
         }
         let pkgpath = self.native_global_string_value(&self.current_pkgpath());
         let is_in_schema =
@@ -1681,7 +1795,7 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             &ApiFunc::kclvm_value_function_invoke.name(),
             &[
                 func,
-                self.global_ctx_ptr(),
+                self.current_runtime_ctx_ptr(),
                 list_value,
                 dict_value,
                 pkgpath,
@@ -1703,7 +1817,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             } else {
                 &ApiFunc::kclvm_value_subscr
             };
-            value = self.build_call(&fn_name.name(), &[value, index]);
+            value = self.build_call(
+                &fn_name.name(),
+                &[self.current_runtime_ctx_ptr(), value, index],
+            );
         } else {
             let lower = {
                 if let Some(lower) = &subscript.lower {
@@ -1731,7 +1848,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             } else {
                 &ApiFunc::kclvm_value_slice
             };
-            value = self.build_call(&fn_name.name(), &[value, lower, upper, step]);
+            value = self.build_call(
+                &fn_name.name(),
+                &[self.current_runtime_ctx_ptr(), value, lower, upper, step],
+            );
         }
         Ok(value)
     }
@@ -1933,13 +2053,13 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             } else {
                 self.none_value()
             };
-            self.dict_insert(dict_value, name.as_str(), value, 0, -1);
+            self.dict_insert(dict_value, name.node.as_str(), value, 0, -1);
         }
         let pkgpath = self.native_global_string_value(&self.current_pkgpath());
         let schema = self.build_call(
             &ApiFunc::kclvm_schema_value_new.name(),
             &[
-                self.global_ctx_ptr(),
+                self.current_runtime_ctx_ptr(),
                 list_value,
                 dict_value,
                 schema_type,
@@ -1949,7 +2069,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
             ],
         );
         if !is_in_schema {
-            self.build_void_call(&ApiFunc::kclvm_schema_optional_check.name(), &[schema]);
+            self.build_void_call(
+                &ApiFunc::kclvm_schema_optional_check.name(),
+                &[self.current_runtime_ctx_ptr(), schema],
+            );
         }
         utils::update_ctx_filename(self, &schema_expr.config);
         {
@@ -1991,7 +2114,12 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
         utils::update_ctx_current_line(self);
         self.build_void_call(
             &ApiFunc::kclvm_schema_assert.name(),
-            &[check_result, msg, schema_config_meta],
+            &[
+                self.current_runtime_ctx_ptr(),
+                check_result,
+                msg,
+                schema_config_meta,
+            ],
         );
         self.br(end_block);
         self.builder.position_at_end(end_block);
@@ -2002,6 +2130,9 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
         check_backtrack_stop!(self);
         let pkgpath = &self.current_pkgpath();
         let is_in_schema = self.schema_stack.borrow().len() > 0;
+        // Higher-order lambda requires capturing the current lambda closure variable
+        // as well as the closure of a more external scope.
+        let last_closure_map = self.get_current_inner_scope_variable_map();
         let func_before_block = self.append_block("");
         self.br(func_before_block);
         // Use "pkgpath"+"kclvm_lambda" to name 'function' to prevent conflicts between lambdas with the same name in different packages
@@ -2012,7 +2143,8 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
         ));
         // Enter the function
         self.push_function(function);
-        self.lambda_stack.borrow_mut().push(true);
+        // Push the current lambda scope level in the lambda stack.
+        self.push_lambda(self.scope_level() + 1);
         // Lambda function body
         let block = self.context.append_basic_block(function, ENTRY_NAME);
         self.builder.position_at_end(block);
@@ -2033,7 +2165,11 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 let string_ptr_value = self.native_global_string(shcmea_closure_name, "").into();
                 let schema_value = self.build_call(
                     &ApiFunc::kclvm_dict_get_value.name(),
-                    &[closure_map, string_ptr_value],
+                    &[
+                        self.current_runtime_ctx_ptr(),
+                        closure_map,
+                        string_ptr_value,
+                    ],
                 );
                 let value_ptr_type = self.value_ptr_type();
                 let var = self
@@ -2053,11 +2189,11 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
         let closure = self.list_value();
         // Use closure map in the laste scope to construct curret closure map.
         // The default value of the closure map is `{}`.
-        self.list_append(closure, self.get_closure_map());
+        self.list_append(closure, last_closure_map);
         let function = self.closure_value(function, closure);
         self.leave_scope();
         self.pop_function();
-        self.lambda_stack.borrow_mut().pop();
+        self.pop_lambda();
         Ok(function)
     }
 
@@ -2101,7 +2237,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                     ast::CmpOp::NotIn => ApiFunc::kclvm_value_not_in,
                     ast::CmpOp::In => ApiFunc::kclvm_value_in,
                 };
-                let result_value = self.build_call(&fn_name.name(), &[left_value, right_value]);
+                let result_value = self.build_call(
+                    &fn_name.name(),
+                    &[self.current_runtime_ctx_ptr(), left_value, right_value],
+                );
                 let is_truth = self.value_is_truthy(result_value);
                 left_value = right_value;
                 // Get next value using a store/load temp block
@@ -2144,7 +2283,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 ast::CmpOp::NotIn => ApiFunc::kclvm_value_not_in,
                 ast::CmpOp::In => ApiFunc::kclvm_value_in,
             };
-            left_value = self.build_call(&fn_name.name(), &[left_value, right_value]);
+            left_value = self.build_call(
+                &fn_name.name(),
+                &[self.current_runtime_ctx_ptr(), left_value, right_value],
+            );
             Ok(left_value)
         }
     }
@@ -2174,7 +2316,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
         let string_ptr_value = self
             .native_global_string(string_lit.value.as_str(), "")
             .into();
-        Ok(self.build_call(&ApiFunc::kclvm_value_Str.name(), &[string_ptr_value]))
+        Ok(self.build_call(
+            &ApiFunc::kclvm_value_Str.name(),
+            &[self.current_runtime_ctx_ptr(), string_ptr_value],
+        ))
     }
 
     fn walk_name_constant_lit(
@@ -2204,8 +2349,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                     .expect(kcl_error::INTERNAL_ERROR_MSG),
                 _ => panic!("{}", kcl_error::INVALID_JOINED_STR_MSG),
             };
-            result_value =
-                self.build_call(&ApiFunc::kclvm_value_op_add.name(), &[result_value, value]);
+            result_value = self.build_call(
+                &ApiFunc::kclvm_value_op_add.name(),
+                &[self.current_runtime_ctx_ptr(), result_value, value],
+            );
         }
         Ok(result_value)
     }
@@ -2223,7 +2370,10 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
                 _ => panic!("{}", kcl_error::INVALID_STR_INTERPOLATION_SPEC_MSG),
             };
         }
-        Ok(self.build_call(&fn_name.name(), &[formatted_expr_value]))
+        Ok(self.build_call(
+            &fn_name.name(),
+            &[self.current_runtime_ctx_ptr(), formatted_expr_value],
+        ))
     }
 
     fn walk_comment(&self, _comment: &'ctx ast::Comment) -> Self::Result {
@@ -2239,11 +2389,6 @@ impl<'ctx> TypedResultWalker<'ctx> for LLVMCodeGenContext<'ctx> {
 
     fn walk_module(&self, module: &'ctx ast::Module) -> Self::Result {
         check_backtrack_stop!(self);
-        if !module.body.is_empty() {
-            utils::update_ctx_filename(self, &module.body[0]);
-        }
-        // Compile all schema and rule firstly
-        self.compile_module_import_and_types(module);
         // Compile all statements of the module
         self.walk_stmts_except_import(&module.body)
     }
@@ -2285,7 +2430,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         match identifier_ctx {
             ast::ExprContext::Store => {
                 if identifier.names.len() == 1 {
-                    let name = identifier.names[0].as_str();
+                    let name = identifier.names[0].node.as_str();
                     let tpe = self.value_ptr_type();
                     // Global variables
                     if self.scope_level() == GLOBAL_LEVEL {
@@ -2294,12 +2439,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                             right_value.expect(kcl_error::INTERNAL_ERROR_MSG),
                         );
                     // Local variables including schema/rule/lambda
-                    } else if *self
-                        .lambda_stack
-                        .borrow_mut()
-                        .last()
-                        .expect(kcl_error::INTERNAL_ERROR_MSG)
-                    {
+                    } else if self.is_in_lambda() {
                         let value = right_value.expect(kcl_error::INTERNAL_ERROR_MSG);
                         // If variable exists in the scope and update it, if not, add it to the scope.
                         if !self.store_variable_in_current_scope(name, value) {
@@ -2354,7 +2494,11 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                             self.builder.position_at_end(then_block);
                             let config_entry = self.build_call(
                                 &ApiFunc::kclvm_dict_get_entry.name(),
-                                &[config_value, string_ptr_value],
+                                &[
+                                    self.current_runtime_ctx_ptr(),
+                                    config_value,
+                                    string_ptr_value,
+                                ],
                             );
                             self.br(else_block);
                             self.builder.position_at_end(else_block);
@@ -2381,6 +2525,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                                 self.build_void_call(
                                     &ApiFunc::kclvm_schema_backtrack_cache.name(),
                                     &[
+                                        self.current_runtime_ctx_ptr(),
                                         schema_value,
                                         backtrack_cache,
                                         cal_map,
@@ -2416,7 +2561,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                     }
                 } else {
                     let names = &identifier.names;
-                    let name = names[0].as_str();
+                    let name = names[0].node.as_str();
                     let mut value = if is_in_schema {
                         self.get_variable_in_schema(name)
                             .expect(kcl_error::INTERNAL_ERROR_MSG)
@@ -2425,7 +2570,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                             .expect(kcl_error::INTERNAL_ERROR_MSG)
                     };
                     for i in 0..names.len() - 1 {
-                        let attr = names[i + 1].as_str();
+                        let attr = names[i + 1].node.as_str();
                         let ctx = if matches!(identifier_ctx, ast::ExprContext::Store)
                             && i != names.len() - 2
                             && names.len() > 2
@@ -2439,7 +2584,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                                 let attr = self.native_global_string(attr, "").into();
                                 value = self.build_call(
                                     &ApiFunc::kclvm_value_load_attr.name(),
-                                    &[value, attr],
+                                    &[self.current_runtime_ctx_ptr(), value, attr],
                                 );
                             }
                             ast::ExprContext::Store => {
@@ -2447,11 +2592,110 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                                 self.build_void_call(
                                     &ApiFunc::kclvm_dict_set_value.name(),
                                     &[
+                                        self.current_runtime_ctx_ptr(),
                                         value,
                                         attr,
                                         right_value.expect(kcl_error::INTERNAL_ERROR_MSG),
                                     ],
                                 );
+
+                                let is_local_var = {
+                                    let local_vars = self.local_vars.borrow_mut();
+                                    local_vars.contains(name)
+                                };
+                                let is_in_lambda = self.is_in_lambda();
+                                // Set config value for the schema attribute if the attribute is in the schema and
+                                // it is not a local variable in the lambda function.
+                                if self.scope_level() >= INNER_LEVEL
+                                    && is_in_schema
+                                    && !is_in_lambda
+                                    && !is_local_var
+                                {
+                                    let schema_value = self
+                                        .get_variable(value::SCHEMA_SELF_NAME)
+                                        .expect(kcl_error::INTERNAL_ERROR_MSG);
+                                    let config_value = self
+                                        .get_variable(value::SCHEMA_CONFIG_NAME)
+                                        .expect(kcl_error::INTERNAL_ERROR_MSG);
+                                    let string_ptr_value =
+                                        self.native_global_string(name, "").into();
+                                    let has_key = self
+                                        .build_call(
+                                            &ApiFunc::kclvm_dict_has_value.name(),
+                                            &[config_value, string_ptr_value],
+                                        )
+                                        .into_int_value();
+                                    // The config has the attribute key?
+                                    let has_key = self.builder.build_int_compare(
+                                        IntPredicate::NE,
+                                        has_key,
+                                        self.native_i8_zero(),
+                                        "",
+                                    );
+                                    let last_block = self.append_block("");
+                                    let then_block = self.append_block("");
+                                    let else_block = self.append_block("");
+                                    self.br(last_block);
+                                    self.builder.position_at_end(last_block);
+                                    let none_value = self.none_value();
+                                    self.builder
+                                        .build_conditional_branch(has_key, then_block, else_block);
+                                    self.builder.position_at_end(then_block);
+                                    let config_entry = self.build_call(
+                                        &ApiFunc::kclvm_dict_get_entry.name(),
+                                        &[
+                                            self.current_runtime_ctx_ptr(),
+                                            config_value,
+                                            string_ptr_value,
+                                        ],
+                                    );
+                                    self.br(else_block);
+                                    self.builder.position_at_end(else_block);
+                                    let tpe = self.value_ptr_type();
+                                    let phi = self.builder.build_phi(tpe, "");
+                                    phi.add_incoming(&[
+                                        (&none_value, last_block),
+                                        (&config_entry, then_block),
+                                    ]);
+                                    let config_value = phi.as_basic_value();
+                                    self.value_union(schema_value, config_value);
+                                    let cal_map = self
+                                        .get_variable(value::SCHEMA_CAL_MAP)
+                                        .expect(kcl_error::INTERNAL_ERROR_MSG);
+                                    let backtrack_cache = self
+                                        .get_variable(value::BACKTRACK_CACHE)
+                                        .expect(kcl_error::INTERNAL_ERROR_MSG);
+                                    let runtime_type = self
+                                        .get_variable(value::SCHEMA_RUNTIME_TYPE)
+                                        .expect(kcl_error::INTERNAL_ERROR_MSG);
+                                    let name_native_str = self.native_global_string_value(name);
+                                    self.build_void_call(
+                                        &ApiFunc::kclvm_schema_backtrack_cache.name(),
+                                        &[
+                                            self.current_runtime_ctx_ptr(),
+                                            schema_value,
+                                            backtrack_cache,
+                                            cal_map,
+                                            name_native_str,
+                                            runtime_type,
+                                        ],
+                                    );
+                                    // Update backtrack meta
+                                    {
+                                        if let Some(backtrack_meta) =
+                                            self.backtrack_meta.borrow_mut().as_mut()
+                                        {
+                                            if name == backtrack_meta.target {
+                                                backtrack_meta.count += 1;
+                                                if backtrack_meta.count == backtrack_meta.level {
+                                                    backtrack_meta.stop = true;
+                                                    self.ret(schema_value);
+                                                    return Ok(schema_value);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -2459,7 +2703,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                 Ok(right_value.expect(kcl_error::INTERNAL_ERROR_MSG))
             }
             ast::ExprContext::Load => {
-                let name = identifier.names[0].as_str();
+                let name = identifier.names[0].node.as_str();
                 let is_local_var = {
                     let local_vars = self.local_vars.borrow_mut();
                     local_vars.contains(name)
@@ -2472,7 +2716,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                     }
                 } else {
                     let names = &identifier.names;
-                    let name = names[0].as_str();
+                    let name = names[0].node.as_str();
                     let mut value = if identifier.pkgpath.is_empty() {
                         if is_in_schema && !is_local_var {
                             self.get_variable_in_schema(name)
@@ -2485,7 +2729,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                         self.ok_result().expect(kcl_error::INTERNAL_ERROR_MSG)
                     };
                     for i in 0..names.len() - 1 {
-                        let attr = names[i + 1].as_str();
+                        let attr = names[i + 1].node.as_str();
                         let ctx = if matches!(identifier_ctx, ast::ExprContext::Store)
                             && i != names.len() - 2
                             && names.len() > 2
@@ -2511,7 +2755,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                                     let attr = self.native_global_string(attr, "").into();
                                     value = self.build_call(
                                         &ApiFunc::kclvm_value_load_attr.name(),
-                                        &[value, attr],
+                                        &[self.current_runtime_ctx_ptr(), value, attr],
                                     );
                                 }
                             }
@@ -2520,6 +2764,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                                 self.build_void_call(
                                     &ApiFunc::kclvm_dict_set_value.name(),
                                     &[
+                                        self.current_runtime_ctx_ptr(),
                                         value,
                                         attr,
                                         right_value.expect(kcl_error::INTERNAL_ERROR_MSG),
@@ -2560,7 +2805,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             } else {
                 self.none_value()
             };
-            self.dict_insert(dict_value, name.as_str(), value, 0, -1);
+            self.dict_insert(dict_value, name.node.as_str(), value, 0, -1);
         }
         let name = match &decorator.func.node {
             ast::Expr::Identifier(ident) if ident.names.len() == 1 => ident.names[0].clone(),
@@ -2571,7 +2816,8 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         Ok(self.build_call(
             &ApiFunc::kclvm_value_Decorator.name(),
             &[
-                self.native_global_string_value(name.as_str()),
+                self.current_runtime_ctx_ptr(),
+                self.native_global_string_value(name.node.as_str()),
                 list_value,
                 dict_value,
                 schema_config_meta,
@@ -2627,16 +2873,20 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             self.builder.position_at_end(next_block);
             let arg_value = self.build_call(
                 &ApiFunc::kclvm_list_get_option.name(),
-                &[args, self.native_int_value(i as i32)],
+                &[
+                    self.current_runtime_ctx_ptr(),
+                    args,
+                    self.native_int_value(i as i32),
+                ],
             );
-            self.store_variable(&arg_name.names[0], arg_value);
+            self.store_variable(&arg_name.names[0].node, arg_value);
         }
         // for loop in 0..argument_len in LLVM end
         self.br(end_block);
         self.builder.position_at_end(end_block);
         // Keyword arguments
         for arg_name in arg_names.iter() {
-            let name = &arg_name.names[0];
+            let name = &arg_name.names[0].node;
             let string_ptr_value = self.native_global_string(name.as_str(), "").into();
             let has_key = self
                 .build_call(
@@ -2657,10 +2907,10 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             self.builder.position_at_end(then_block);
             let arg = self.build_call(
                 &ApiFunc::kclvm_dict_get_value.name(),
-                &[kwargs, string_ptr_value],
+                &[self.current_runtime_ctx_ptr(), kwargs, string_ptr_value],
             );
             // Find argument name in the scope
-            self.store_variable(&arg_name.names[0], arg);
+            self.store_variable(&arg_name.names[0].node, arg);
             self.br(else_block);
             self.builder.position_at_end(else_block);
         }
@@ -2704,14 +2954,14 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         {
             let mut local_vars = self.local_vars.borrow_mut();
             for v in targets {
-                let name = &v.node.names[0];
+                let name = &v.node.names[0].node;
                 local_vars.insert(name.clone());
             }
         }
         if targets.len() == 1 {
             // Store the target
             self.walk_identifier_with_ctx(
-                &targets.get(0).expect(kcl_error::INTERNAL_ERROR_MSG).node,
+                &targets.first().expect(kcl_error::INTERNAL_ERROR_MSG).node,
                 &ast::ExprContext::Store,
                 Some(next_value),
             )
@@ -2721,7 +2971,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             let value = self.build_call(&ApiFunc::kclvm_iterator_cur_value.name(), &[iter_value]);
             // Store the target
             self.walk_identifier_with_ctx(
-                &targets.get(0).expect(kcl_error::INTERNAL_ERROR_MSG).node,
+                &targets.first().expect(kcl_error::INTERNAL_ERROR_MSG).node,
                 &ast::ExprContext::Store,
                 Some(key),
             )
@@ -2780,7 +3030,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         {
             let mut local_vars = self.local_vars.borrow_mut();
             for v in targets {
-                let name = &v.node.names[0];
+                let name = &v.node.names[0].node;
                 local_vars.remove(name);
             }
         }
@@ -2797,7 +3047,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             if let Some(key) = &item.node.key {
                 let mut insert_index = -1;
                 let optional_name = match &key.node {
-                    ast::Expr::Identifier(identifier) => Some(identifier.names[0].clone()),
+                    ast::Expr::Identifier(identifier) => Some(identifier.names[0].node.clone()),
                     ast::Expr::StringLit(string_lit) => Some(string_lit.value.clone()),
                     ast::Expr::Subscript(subscript) => {
                         let mut name = None;
@@ -2806,7 +3056,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                                 if let ast::Expr::NumberLit(number) = &index_node.node {
                                     if let ast::NumberLitValue::Int(v) = number.value {
                                         insert_index = v;
-                                        name = Some(identifier.names[0].clone())
+                                        name = Some(identifier.names[0].node.clone())
                                     }
                                 }
                             }
@@ -2816,12 +3066,11 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                     _ => None,
                 };
                 // Store a local variable for every entry key.
-                let key = match optional_name {
-                    Some(name) => {
-                        self.add_or_update_local_variable(&name, value);
-                        self.string_value(&name)
+                let key = match &optional_name {
+                    Some(name) if !self.local_vars.borrow().contains(name) => {
+                        self.string_value(name)
                     }
-                    None => self.walk_expr(key)?,
+                    _ => self.walk_expr(key)?,
                 };
                 self.dict_insert_with_key_value(
                     config_value,
@@ -2830,11 +3079,16 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                     item.node.operation.value(),
                     insert_index as i32,
                 );
+                if let Some(name) = &optional_name {
+                    let value =
+                        self.dict_get(config_value, self.native_global_string(name, "").into());
+                    self.add_or_update_local_variable(name, value);
+                }
             } else {
                 // If the key does not exist, execute the logic of unpacking expression `**expr` here.
                 self.build_void_call(
                     &ApiFunc::kclvm_dict_insert_unpack.name(),
-                    &[config_value, value],
+                    &[self.current_runtime_ctx_ptr(), config_value, value],
                 );
             }
         }

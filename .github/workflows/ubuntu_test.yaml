@@ -5,24 +5,30 @@ jobs:
     # Ref: https://github.com/actions/runner-images/tree/main/images/linux
     name: Test
     runs-on: ubuntu-latest
-    container:
-      image: kcllang/kcl-builder
     steps:
       - name: Check out code
         uses: actions/checkout@v3
         with:
           submodules: "true"
-      - name: Set up Go 1.18
+      - name: Set up Go
         uses: actions/setup-go@v2
         with:
-          go-version: 1.19
-      - name: Delete rust cargo
-        run: rm -rf /root/.cargo/bin
+          go-version: 1.21
+
+      # Prerequisite
+
+      - name: Install Python3 and LLVM
         shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git wget curl make
+          sudo apt-get install python3 python3-pip -y
+          sudo apt-get install -y clang-12 lld-12
+          sudo ln -sf /usr/bin/clang-12 /usr/bin/clang
       - name: Install rust nightly toolchain
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: 1.67
+          toolchain: 1.76
           override: true
           components: clippy, rustfmt
       - name: Code format check
@@ -35,28 +41,19 @@ jobs:
         shell: bash
       - name: Grammar test
         working-directory: ./kclvm
-        run: export PATH=$PATH:$PWD/../_build/dist/ubuntu/kclvm/bin && make install-rustc-wasm && make && make test-grammar
+        run: export PATH=$PATH:$PWD/../_build/dist/ubuntu/kclvm/bin && make && make test-grammar
         shell: bash
       - name: Runtime test
         working-directory: ./kclvm
-        run: export PATH=$PATH:$PWD/../_build/dist/ubuntu/kclvm/bin && make install-rustc-wasm && make && make test-runtime
+        run: export PATH=$PATH:$PWD/../_build/dist/ubuntu/kclvm/bin && make && make test-runtime
         shell: bash
-      - name: Install kpm
-        run: go install kcl-lang.io/kpm@latest
+      - name: Install KCL CLI
+        run: go install kcl-lang.io/cli/cmd/kcl@latest
 
       - name: Unit test
         working-directory: ./kclvm
-        run: export PATH=$PATH:$PWD/../_build/dist/ubuntu/kclvm/bin && make install-rustc-wasm && make && make codecov-lcov
+        run: export PATH=$PATH:$PWD/../_build/dist/ubuntu/kclvm/bin && make && make test
         shell: bash
-      - name: Konfig test
-        working-directory: ./kclvm
-        run: export PATH=$PATH:$PWD/../_build/dist/ubuntu/kclvm/bin && make install-rustc-wasm && make && make test-konfig
-        shell: bash
-      - name: Coveralls upload
-        uses: coverallsapp/github-action@master
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          path-to-lcov: ./kclvm/.kclvm/lcov.info
 
       - uses: actions/upload-artifact@v3
         with:

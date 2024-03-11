@@ -261,7 +261,7 @@ impl<'p> Printer<'p> {
     }
 }
 
-/// Print AST to string
+/// Print AST to string. The default format is according to the KCL code style defined here: https://kcl-lang.io/docs/reference/lang/spec/codestyle
 pub fn print_ast_module(module: &Module) -> String {
     let mut printer = Printer::default();
     printer.write_module(module);
@@ -272,5 +272,12 @@ pub fn print_ast_module(module: &Module) -> String {
 pub fn print_ast_node(node: ASTNode) -> String {
     let mut printer = Printer::default();
     printer.write_node(node);
+    printer.out
+}
+
+/// Print schema expression AST node to string.
+pub fn print_schema_expr(schema_expr: &ast::SchemaExpr) -> String {
+    let mut printer = Printer::default();
+    printer.walk_schema_expr(schema_expr);
     printer.out
 }

@@ -1,4 +1,5 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
+
 #![allow(clippy::missing_safety_doc)]
 
 use crate::*;
@@ -23,19 +24,20 @@ pub extern "C" fn kclvm_plugin_init(
 }
 
 // import kcl_plugin.hello
-// hello.SayHello()
+// hello.say_hello()
 //
-// => return kclvm_plugin_invoke("kcl_plugin.hello.SayHello", args, kwarge)
+// => return kclvm_plugin_invoke("kcl_plugin.hello.say_hello", args, kwargs)
 
 #[no_mangle]
 #[runtime_fn]
 pub unsafe extern "C" fn kclvm_plugin_invoke(
-    method: *const i8,
+    ctx: *mut kclvm_context_t,
+    method: *const c_char,
     args: *const kclvm_value_ref_t,
     kwargs: *const kclvm_value_ref_t,
 ) -> *const kclvm_value_ref_t {
-    let args_s = kclvm_value_to_json_value_with_null(args);
-    let kwargs_s = kclvm_value_to_json_value_with_null(kwargs);
+    let args_s = kclvm_value_to_json_value_with_null(ctx, args);
+    let kwargs_s = kclvm_value_to_json_value_with_null(ctx, kwargs);
 
     let args_json = kclvm_value_Str_ptr(args_s);
     let kwargs_json = kclvm_value_Str_ptr(kwargs_s);
@@ -46,11 +48,11 @@ pub unsafe extern "C" fn kclvm_plugin_invoke(
     // kclvm_value_delete(args_s);
     // kclvm_value_delete(kwargs_s);
 
-    let ptr = kclvm_value_from_json(result_json);
+    let ptr = kclvm_value_from_json(ctx, result_json);
     {
         if let Some(msg) = ptr_as_ref(ptr).dict_get_value("__kcl_PanicInfo__") {
-            let ctx = Context::current_context_mut();
-            ctx.set_err_type(&ErrType::EvaluationError_TYPE);
+            let ctx = mut_ptr_as_ref(ctx);
+            ctx.set_err_type(&RuntimeErrorType::EvaluationError);
 
             panic!("{}", msg.as_str());
         }
@@ -63,7 +65,7 @@ pub unsafe extern "C" fn kclvm_plugin_invoke(
 #[no_mangle]
 #[runtime_fn]
 pub extern "C" fn kclvm_plugin_invoke_json(
-    method: *const i8,
+    method: *const c_char,
     args: *const c_char,
     kwargs: *const c_char,
 ) -> *const c_char {
@@ -74,7 +76,7 @@ pub extern "C" fn kclvm_plugin_invoke_json(
 
         let ptr = (&_plugin_handler_fn_ptr as *const u64) as *const ()
             as *const extern "C" fn(
-                method: *const i8,
+                method: *const c_char,
                 args: *const c_char,
                 kwargs: *const c_char,
             ) -> *const c_char;

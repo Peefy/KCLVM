@@ -6,10 +6,13 @@ use compiler_base_macros::bug;
 use kclvm_ast::config::try_get_config_expr_mut;
 use kclvm_ast::path::get_key_path;
 use kclvm_ast::walker::MutSelfMutWalker;
+use kclvm_ast::MAIN_PKG;
 use kclvm_ast::{ast, walk_if_mut};
 use kclvm_ast_pretty::print_ast_module;
 use kclvm_parser::parse_expr;
 use kclvm_sema::pre_process::{fix_config_expr_nest_attr, transform_multi_assign};
+
+use crate::path::parse_attribute_path;
 
 use super::util::{invalid_spec_error, split_field_path};
 
@@ -29,7 +32,7 @@ const IMPORT_STMT_COLUMN_OFFSET: u64 = 1;
 /// use kclvm_parser::load_program;
 /// use kclvm_tools::query::r#override::apply_overrides;
 ///
-/// let mut prog = load_program(&["config.k"], None).unwrap();
+/// let mut prog = load_program(&["config.k"], None, None).unwrap();
 /// let overrides = vec![parse_override_spec("config.id=1").unwrap()];
 /// let import_paths = vec!["path.to.pkg".to_string()];
 /// let result = apply_overrides(&mut prog, &overrides, &import_paths, true).unwrap();
@@ -42,7 +45,7 @@ pub fn apply_overrides(
 ) -> Result<()> {
     for o in overrides {
         let pkgpath = if o.pkgpath.is_empty() {
-            &prog.main
+            MAIN_PKG
         } else {
             &o.pkgpath
         };
@@ -89,10 +92,10 @@ fn build_expr_from_string(value: &str) -> Option<ast::NodeRef<ast::Expr>> {
 /// # Examples
 ///
 /// ```no_check
-/// use kclvm_parser::parse_file;
+/// use kclvm_parser::parse_file_force_errors;
 /// use kclvm_tools::query::apply_override_on_module;
 ///
-/// let mut module = parse_file("", None).unwrap();
+/// let mut module = parse_file_force_errors("", None).unwrap();
 /// let override_spec = parse_override_spec("config.id=1").unwrap();
 /// let import_paths = vec!["path.to.pkg".to_string()];
 /// let result = apply_override_on_module(&mut module, override_spec, &import_paths).unwrap();
@@ -104,15 +107,17 @@ pub fn apply_override_on_module(
 ) -> Result<bool> {
     // Apply import paths on AST module.
     apply_import_paths_on_module(m, import_paths)?;
-    let ss = o.field_path.split('.').collect::<Vec<&str>>();
+    let ss = parse_attribute_path(&o.field_path)?;
     if ss.len() <= 1 {
         return Ok(false);
     }
-    let target_id = ss[0];
-    let field = ss[1..].join(".");
+    let target_id = &ss[0];
     let value = &o.field_value;
     let key = ast::Identifier {
-        names: field.split('.').map(|s| s.to_string()).collect(),
+        names: ss[1..]
+            .iter()
+            .map(|s| ast::Node::dummy_node(s.to_string()))
+            .collect(),
         ctx: ast::ExprContext::Store,
         pkgpath: "".to_string(),
     };
@@ -128,7 +133,7 @@ pub fn apply_override_on_module(
     transform_multi_assign(m);
     let mut transformer = OverrideTransformer {
         target_id: target_id.to_string(),
-        field_path: field,
+        field_paths: ss[1..].to_vec(),
         override_key: key,
         override_value: build_expr_from_string(value),
         override_target_count: 0,
@@ -187,9 +192,9 @@ fn apply_import_paths_on_module(m: &mut ast::Module, import_paths: &[String]) ->
     for stmt in &m.body {
         if let ast::Stmt::Import(import_stmt) = &stmt.node {
             if let Some(asname) = &import_stmt.asname {
-                exist_import_set.insert(format!("{} as {}", import_stmt.path, asname));
+                exist_import_set.insert(format!("{} as {}", import_stmt.path.node, asname.node));
             } else {
-                exist_import_set.insert(import_stmt.path.to_string());
+                exist_import_set.insert(import_stmt.path.node.to_string());
             }
         }
     }
@@ -203,7 +208,7 @@ fn apply_import_paths_on_module(m: &mut ast::Module, import_paths: &[String]) ->
             .last()
             .ok_or_else(|| anyhow!("Invalid import path {}", path))?;
         let import_node = ast::ImportStmt {
-            path: path.to_string(),
+            path: ast::Node::dummy_node(path.to_string()),
             rawpath: "".to_string(),
             name: name.to_string(),
             asname: None,
@@ -226,7 +231,7 @@ fn apply_import_paths_on_module(m: &mut ast::Module, import_paths: &[String]) ->
 /// OverrideTransformer is used to walk AST and transform it with the override values.
 struct OverrideTransformer {
     pub target_id: String,
-    pub field_path: String,
+    pub field_paths: Vec<String>,
     pub override_key: ast::Identifier,
     pub override_value: Option<ast::NodeRef<ast::Expr>>,
     pub override_target_count: usize,
@@ -243,7 +248,7 @@ impl<'ctx> MutSelfMutWalker<'ctx> for OverrideTransformer {
                 unification_stmt.target.node.names
             ),
         };
-        if name != &self.target_id {
+        if name.node != self.target_id {
             return;
         }
         self.override_target_count = 1;
@@ -258,7 +263,7 @@ impl<'ctx> MutSelfMutWalker<'ctx> for OverrideTransformer {
                 if target.node.names.len() != 1 {
                     continue;
                 }
-                if target.node.names[0] != self.target_id {
+                if target.node.names[0].node != self.target_id {
                     continue;
                 }
                 self.override_target_count += 1;
@@ -320,7 +325,11 @@ impl OverrideTransformer {
     /// return whether is found a replaced one.
     fn lookup_config_and_replace(&self, config_expr: &mut ast::ConfigExpr) -> bool {
         // Split a path into multiple parts. `a.b.c` -> ["a", "b", "c"]
-        let parts = self.field_path.split('.').collect::<Vec<&str>>();
+        let parts = self
+            .field_paths
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<&str>>();
         self.replace_config_with_path_parts(config_expr, &parts)
     }
 
@@ -397,7 +406,10 @@ impl OverrideTransformer {
         } else if let ast::OverrideAction::CreateOrUpdate = self.action {
             if !changed {
                 let key = ast::Identifier {
-                    names: parts.iter().map(|s| s.to_string()).collect(),
+                    names: parts
+                        .iter()
+                        .map(|s| ast::Node::dummy_node(s.to_string()))
+                        .collect(),
                     ctx: ast::ExprContext::Store,
                     pkgpath: "".to_string(),
                 };

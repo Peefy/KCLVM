@@ -1,9 +1,11 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::resolver::Resolver;
-use crate::ty::{has_any_type, is_upper_bound, sup, Type, TypeInferMethods, ZERO_LIT_TYPES};
+use crate::ty::{
+    has_any_type, is_upper_bound, sup, Type, TypeInferMethods, TypeRef, ZERO_LIT_TYPES,
+};
 use kclvm_ast::ast;
-use kclvm_error::Position;
+use kclvm_error::diagnostic::Range;
 
 const DIV_OR_MOD_ZERO_MSG: &str = "integer division or modulo by zero";
 
@@ -53,11 +55,11 @@ impl<'ctx> Resolver<'ctx> {
     /// Or: any_type1 or any_type1 -> sup([any_type1, any_type2])
     pub fn binary(
         &mut self,
-        left: Rc<Type>,
-        right: Rc<Type>,
+        left: TypeRef,
+        right: TypeRef,
         op: &ast::BinOp,
-        pos: Position,
-    ) -> Rc<Type> {
+        range: Range,
+    ) -> TypeRef {
         let t1 = self
             .ctx
             .ty_ctx
@@ -69,11 +71,11 @@ impl<'ctx> Resolver<'ctx> {
         if has_any_type(&[t1.clone(), t2.clone()]) {
             return self.any_ty();
         }
-        let number_binary = |left: &Rc<Type>, right: &Rc<Type>| {
+        let number_binary = |left: &TypeRef, right: &TypeRef| {
             if left.is_float() || right.is_float() {
-                Rc::new(Type::FLOAT)
+                Arc::new(Type::FLOAT)
             } else {
-                Rc::new(Type::INT)
+                Arc::new(Type::INT)
             }
         };
         let (result, return_ty) = match op {
@@ -123,7 +125,7 @@ impl<'ctx> Resolver<'ctx> {
                 if t1.is_number() && t2.is_number() {
                     if ZERO_LIT_TYPES.contains(&t2) {
                         self.handler
-                            .add_type_error(DIV_OR_MOD_ZERO_MSG, pos.clone());
+                            .add_type_error(DIV_OR_MOD_ZERO_MSG, range.clone());
                     }
                     (true, number_binary(&t1, &t2))
                 } else {
@@ -134,7 +136,7 @@ impl<'ctx> Resolver<'ctx> {
                 if t1.is_number() && t2.is_number() {
                     if ZERO_LIT_TYPES.contains(&t2) {
                         self.handler
-                            .add_type_error(DIV_OR_MOD_ZERO_MSG, pos.clone());
+                            .add_type_error(DIV_OR_MOD_ZERO_MSG, range.clone());
                     }
                     (true, self.int_ty())
                 } else {
@@ -186,7 +188,7 @@ impl<'ctx> Resolver<'ctx> {
                             t1.ty_str(),
                             t2.ty_str()
                         ),
-                        pos.clone(),
+                        range.clone(),
                     );
                 }
                 (true, t2)
@@ -201,7 +203,7 @@ impl<'ctx> Resolver<'ctx> {
                     left.ty_str(),
                     right.ty_str()
                 ),
-                pos,
+                range,
             );
         }
         return_ty
@@ -213,7 +215,7 @@ impl<'ctx> Resolver<'ctx> {
     /// - number        unary negation          (int, float)
     /// ~ number        unary bitwise inversion (int)
     /// not x           logical negation        (any type)
-    pub fn unary(&mut self, ty: Rc<Type>, op: &ast::UnaryOp, pos: Position) -> Rc<Type> {
+    pub fn unary(&mut self, ty: TypeRef, op: &ast::UnaryOp, range: Range) -> TypeRef {
         if has_any_type(&[ty.clone()]) {
             return self.any_ty();
         }
@@ -235,7 +237,7 @@ impl<'ctx> Resolver<'ctx> {
                     op.symbol(),
                     ty.ty_str(),
                 ),
-                pos,
+                range,
             );
             self.any_ty()
         }
@@ -251,11 +253,11 @@ impl<'ctx> Resolver<'ctx> {
     /// iterable        # 1 in [1, 2, 3], "s" in "ss", "key" in Schema
     pub fn compare(
         &mut self,
-        left: Rc<Type>,
-        right: Rc<Type>,
+        left: TypeRef,
+        right: TypeRef,
         op: &ast::CmpOp,
-        pos: Position,
-    ) -> Rc<Type> {
+        range: Range,
+    ) -> TypeRef {
         let t1 = self.ctx.ty_ctx.literal_union_type_to_variable_type(left);
         let t2 = self.ctx.ty_ctx.literal_union_type_to_variable_type(right);
         if has_any_type(&[t1.clone(), t2.clone()]) {
@@ -313,7 +315,7 @@ impl<'ctx> Resolver<'ctx> {
                 t1.ty_str(),
                 t2.ty_str(),
             ),
-            pos,
+            range,
         );
         self.any_ty()
     }

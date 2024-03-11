@@ -26,16 +26,15 @@ use kclvm_ast::walker::TypedResultWalker;
 use kclvm_error::*;
 use kclvm_runtime::{ApiFunc, MAIN_PKG_PATH, PKG_PATH_PREFIX};
 use kclvm_sema::builtin;
+use kclvm_sema::pkgpath_without_prefix;
 use kclvm_sema::plugin;
 
 use crate::codegen::abi::Align;
-use crate::codegen::{error as kcl_error, EmitOptions, INNER_LEVEL};
+use crate::codegen::{error as kcl_error, EmitOptions};
 use crate::codegen::{
-    traits::*, ENTRY_NAME, GLOBAL_VAL_ALIGNMENT, KCL_CONTEXT_VAR_NAME, MODULE_NAME,
-    PKG_INIT_FUNCTION_SUFFIX,
+    traits::*, ENTRY_NAME, GLOBAL_VAL_ALIGNMENT, MODULE_NAME, PKG_INIT_FUNCTION_SUFFIX,
 };
 use crate::codegen::{CodeGenContext, GLOBAL_LEVEL};
-use crate::pkgpath_without_prefix;
 use crate::value;
 
 use super::OBJECT_FILE_SUFFIX;
@@ -60,7 +59,7 @@ pub type CompileResult<'a> = Result<BasicValueEnum<'a>, kcl_error::KCLError>;
 pub struct Scope<'ctx> {
     /// Scalars denotes the expression statement values without attribute.
     pub scalars: RefCell<Vec<BasicValueEnum<'ctx>>>,
-    /// schema_scalar_idxdenotes whether a schema exists in the scalar list.
+    /// schema_scalar_idx denotes whether a schema exists in the scalar list.
     pub schema_scalar_idx: RefCell<usize>,
     pub variables: RefCell<IndexMap<String, PointerValue<'ctx>>>,
     pub closures: RefCell<IndexMap<String, PointerValue<'ctx>>>,
@@ -86,7 +85,7 @@ pub struct LLVMCodeGenContext<'ctx> {
     pub imported: RefCell<HashSet<String>>,
     pub local_vars: RefCell<HashSet<String>>,
     pub schema_stack: RefCell<Vec<value::SchemaType>>,
-    pub lambda_stack: RefCell<Vec<bool>>,
+    pub lambda_stack: RefCell<Vec<usize>>,
     pub schema_expr_stack: RefCell<Vec<()>>,
     pub pkgpath_stack: RefCell<Vec<String>>,
     pub filename_stack: RefCell<Vec<String>>,
@@ -103,6 +102,7 @@ pub struct LLVMCodeGenContext<'ctx> {
     // No link mode
     pub no_link: bool,
     pub modules: RefCell<HashMap<String, RefCell<Module<'ctx>>>>,
+    pub workdir: String,
 }
 
 impl<'ctx> CodeGenObject for BasicValueEnum<'ctx> {}
@@ -353,7 +353,10 @@ impl<'ctx> ValueMethods for LLVMCodeGenContext<'ctx> {
         let i64_type = self.context.i64_type();
         self.build_call(
             &ApiFunc::kclvm_value_Int.name(),
-            &[i64_type.const_int(v as u64, false).into()],
+            &[
+                self.current_runtime_ctx_ptr(),
+                i64_type.const_int(v as u64, false).into(),
+            ],
         )
     }
 
@@ -362,14 +365,20 @@ impl<'ctx> ValueMethods for LLVMCodeGenContext<'ctx> {
         let f64_type = self.context.f64_type();
         self.build_call(
             &ApiFunc::kclvm_value_Float.name(),
-            &[f64_type.const_float(v).into()],
+            &[
+                self.current_runtime_ctx_ptr(),
+                f64_type.const_float(v).into(),
+            ],
         )
     }
 
     /// Construct a string value using &str
     fn string_value(&self, v: &str) -> Self::Value {
         let string_ptr_value = self.native_global_string(v, "");
-        self.build_call(&ApiFunc::kclvm_value_Str.name(), &[string_ptr_value.into()])
+        self.build_call(
+            &ApiFunc::kclvm_value_Str.name(),
+            &[self.current_runtime_ctx_ptr(), string_ptr_value.into()],
+        )
     }
 
     /// Construct a bool value
@@ -377,36 +386,55 @@ impl<'ctx> ValueMethods for LLVMCodeGenContext<'ctx> {
         let i8_type = self.context.i8_type();
         self.build_call(
             &ApiFunc::kclvm_value_Bool.name(),
-            &[i8_type.const_int(v as u64, false).into()],
+            &[
+                self.current_runtime_ctx_ptr(),
+                i8_type.const_int(v as u64, false).into(),
+            ],
         )
     }
 
     /// Construct a None value
     fn none_value(&self) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_None.name(), &[])
+        self.build_call(
+            &ApiFunc::kclvm_value_None.name(),
+            &[self.current_runtime_ctx_ptr()],
+        )
     }
 
     /// Construct a Undefined value
     fn undefined_value(&self) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_Undefined.name(), &[])
+        self.build_call(
+            &ApiFunc::kclvm_value_Undefined.name(),
+            &[self.current_runtime_ctx_ptr()],
+        )
     }
 
     /// Construct a empty kcl list value
     fn list_value(&self) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_List.name(), &[])
+        self.build_call(
+            &ApiFunc::kclvm_value_List.name(),
+            &[self.current_runtime_ctx_ptr()],
+        )
     }
 
     /// Construct a list value with `n` elements
     fn list_values(&self, values: &[Self::Value]) -> Self::Value {
+        let mut args = vec![self.current_runtime_ctx_ptr()];
+        for value in values {
+            args.push(*value);
+        }
         self.build_call(
             &format!("{}{}", ApiFunc::kclvm_value_List.name(), values.len()),
-            values,
+            args.as_slice(),
         )
     }
 
     /// Construct a empty kcl dict value.
     fn dict_value(&self) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_Dict.name(), &[])
+        self.build_call(
+            &ApiFunc::kclvm_value_Dict.name(),
+            &[self.current_runtime_ctx_ptr()],
+        )
     }
 
     /// Construct a unit value
@@ -417,6 +445,7 @@ impl<'ctx> ValueMethods for LLVMCodeGenContext<'ctx> {
         self.build_call(
             &ApiFunc::kclvm_value_Unit.name(),
             &[
+                self.current_runtime_ctx_ptr(),
                 f64_type.const_float(v).into(),
                 i64_type.const_int(raw as u64, false).into(),
                 unit_native_str.into(),
@@ -434,7 +463,7 @@ impl<'ctx> ValueMethods for LLVMCodeGenContext<'ctx> {
         );
         self.build_call(
             &ApiFunc::kclvm_value_Function_using_ptr.name(),
-            &[lambda_fn_ptr, func_name_ptr],
+            &[self.current_runtime_ctx_ptr(), lambda_fn_ptr, func_name_ptr],
         )
     }
     /// Construct a closure function value with the closure variable.
@@ -449,13 +478,20 @@ impl<'ctx> ValueMethods for LLVMCodeGenContext<'ctx> {
         );
         self.build_call(
             &ApiFunc::kclvm_value_Function.name(),
-            &[fn_ptr, closure, func_name_ptr, self.native_i8_zero().into()],
+            &[
+                self.current_runtime_ctx_ptr(),
+                fn_ptr,
+                closure,
+                func_name_ptr,
+                self.native_i8_zero().into(),
+            ],
         )
     }
     /// Construct a schema function value using native functions.
     fn struct_function_value(
         &self,
         functions: &[FunctionValue<'ctx>],
+        attr_functions: &HashMap<String, Vec<FunctionValue<'ctx>>>,
         runtime_type: &str,
     ) -> Self::Value {
         if functions.is_empty() {
@@ -482,12 +518,18 @@ impl<'ctx> ValueMethods for LLVMCodeGenContext<'ctx> {
                 .into()
         };
         let runtime_type_native_str = self.native_global_string_value(runtime_type);
+        let attr_map = self.dict_value();
+        for attr in attr_functions.keys() {
+            self.dict_insert_override_item(attr_map, attr, self.undefined_value())
+        }
         self.builder
             .build_call(
                 self.lookup_function(&ApiFunc::kclvm_value_schema_function.name()),
                 &[
+                    self.current_runtime_ctx_ptr().into(),
                     schema_body_fn_ptr.into(),
                     check_block_fn_ptr.into(),
+                    attr_map.into(),
                     runtime_type_native_str.into(),
                 ],
                 runtime_type,
@@ -531,126 +573,192 @@ impl<'ctx> ValueMethods for LLVMCodeGenContext<'ctx> {
         global_var.as_pointer_value().into()
     }
     /// Get the global runtime context pointer.
-    fn global_ctx_ptr(&self) -> Self::Value {
-        if self.no_link {
-            self.build_call(&ApiFunc::kclvm_context_current.name(), &[])
-        } else {
-            let ctx_ptr = self
-                .module
-                .get_global(KCL_CONTEXT_VAR_NAME)
-                .expect(kcl_error::CONTEXT_VAR_NOT_FOUND_MSG)
-                .as_pointer_value();
-            self.builder.build_load(ctx_ptr, "")
-        }
+    fn current_runtime_ctx_ptr(&self) -> Self::Value {
+        self.builder
+            .get_insert_block()
+            .unwrap()
+            .get_parent()
+            .unwrap()
+            .get_first_param()
+            .expect(kcl_error::CONTEXT_VAR_NOT_FOUND_MSG)
     }
 }
 
 impl<'ctx> ValueCalculationMethods for LLVMCodeGenContext<'ctx> {
     /// lhs + rhs
     fn add(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_op_add.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_op_add.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs - rhs
     fn sub(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_op_sub.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_op_sub.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs * rhs
     fn mul(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_op_mul.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_op_mul.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs / rhs
     fn div(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_op_div.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_op_div.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs // rhs
     fn floor_div(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_op_floor_div.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_op_floor_div.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs % rhs
     fn r#mod(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_op_mod.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_op_mod.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs ** rhs
     fn pow(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_op_pow.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_op_pow.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs << rhs
     fn bit_lshift(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_op_bit_lshift.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_op_bit_lshift.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs >> rhs
     fn bit_rshift(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_op_bit_rshift.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_op_bit_rshift.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs & rhs
     fn bit_and(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_op_bit_and.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_op_bit_and.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs | rhs
     fn bit_or(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_op_bit_or.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_op_bit_or.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs ^ rhs
     fn bit_xor(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_op_bit_xor.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_op_bit_xor.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs and rhs
     fn logic_and(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_logic_and.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_logic_and.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs or rhs
     fn logic_or(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_logic_or.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_logic_or.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs == rhs
     fn cmp_equal_to(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_cmp_equal_to.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_cmp_equal_to.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs != rhs
     fn cmp_not_equal_to(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_cmp_not_equal_to.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_cmp_not_equal_to.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs > rhs
     fn cmp_greater_than(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_cmp_greater_than.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_cmp_greater_than.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs >= rhs
     fn cmp_greater_than_or_equal(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
         self.build_call(
             &ApiFunc::kclvm_value_cmp_greater_than_or_equal.name(),
-            &[lhs, rhs],
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
         )
     }
     /// lhs < rhs
     fn cmp_less_than(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_cmp_less_than.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_cmp_less_than.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs <= rhs
     fn cmp_less_than_or_equal(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
         self.build_call(
             &ApiFunc::kclvm_value_cmp_less_than_or_equal.name(),
-            &[lhs, rhs],
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
         )
     }
     /// lhs as rhs
     fn r#as(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_as.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_as.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs is rhs
     fn is(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_is.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_is.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs is not rhs
     fn is_not(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_is_not.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_is_not.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs in rhs
     fn r#in(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_in.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_in.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
     /// lhs not in rhs
     fn not_in(&self, lhs: Self::Value, rhs: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_not_in.name(), &[lhs, rhs])
+        self.build_call(
+            &ApiFunc::kclvm_value_not_in.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        )
     }
 }
 
@@ -658,7 +766,10 @@ impl<'ctx> DerivedValueCalculationMethods for LLVMCodeGenContext<'ctx> {
     /// Value subscript a[b]
     #[inline]
     fn value_subscript(&self, value: Self::Value, item: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_subscr.name(), &[value, item])
+        self.build_call(
+            &ApiFunc::kclvm_value_subscr.name(),
+            &[self.current_runtime_ctx_ptr(), value, item],
+        )
     }
     /// Value is truth function, return i1 value.
     fn value_is_truthy(&self, value: Self::Value) -> Self::Value {
@@ -672,17 +783,26 @@ impl<'ctx> DerivedValueCalculationMethods for LLVMCodeGenContext<'ctx> {
     /// Value deep copy
     #[inline]
     fn value_deep_copy(&self, value: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_value_deep_copy.name(), &[value])
+        self.build_call(
+            &ApiFunc::kclvm_value_deep_copy.name(),
+            &[self.current_runtime_ctx_ptr(), value],
+        )
     }
     /// value_union unions two collection elements.
     #[inline]
     fn value_union(&self, lhs: Self::Value, rhs: Self::Value) {
-        self.build_void_call(&ApiFunc::kclvm_value_union.name(), &[lhs, rhs]);
+        self.build_void_call(
+            &ApiFunc::kclvm_value_union.name(),
+            &[self.current_runtime_ctx_ptr(), lhs, rhs],
+        );
     }
     // List get the item using the index.
     #[inline]
     fn list_get(&self, list: Self::Value, index: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_list_get.name(), &[list, index])
+        self.build_call(
+            &ApiFunc::kclvm_list_get.name(),
+            &[self.current_runtime_ctx_ptr(), list, index],
+        )
     }
     // List set the item using the index.
     #[inline]
@@ -700,7 +820,7 @@ impl<'ctx> DerivedValueCalculationMethods for LLVMCodeGenContext<'ctx> {
     ) -> Self::Value {
         self.build_call(
             &ApiFunc::kclvm_value_slice.name(),
-            &[list, start, stop, step],
+            &[self.current_runtime_ctx_ptr(), list, start, stop, step],
         )
     }
     /// Append a item into the list.
@@ -716,12 +836,18 @@ impl<'ctx> DerivedValueCalculationMethods for LLVMCodeGenContext<'ctx> {
     /// Runtime list value pop
     #[inline]
     fn list_pop(&self, list: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_list_pop.name(), &[list])
+        self.build_call(
+            &ApiFunc::kclvm_list_pop.name(),
+            &[self.current_runtime_ctx_ptr(), list],
+        )
     }
     /// Runtime list pop the first value
     #[inline]
     fn list_pop_first(&self, list: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_list_pop_first.name(), &[list])
+        self.build_call(
+            &ApiFunc::kclvm_list_pop_first.name(),
+            &[self.current_runtime_ctx_ptr(), list],
+        )
     }
     /// List clear value.
     #[inline]
@@ -731,12 +857,18 @@ impl<'ctx> DerivedValueCalculationMethods for LLVMCodeGenContext<'ctx> {
     /// Return number of occurrences of the list value.
     #[inline]
     fn list_count(&self, list: Self::Value, item: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_list_count.name(), &[list, item])
+        self.build_call(
+            &ApiFunc::kclvm_list_count.name(),
+            &[self.current_runtime_ctx_ptr(), list, item],
+        )
     }
     /// Return first index of the list value. Panic if the value is not present.
     #[inline]
     fn list_find(&self, list: Self::Value, item: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_list_find.name(), &[list, item])
+        self.build_call(
+            &ApiFunc::kclvm_list_find.name(),
+            &[self.current_runtime_ctx_ptr(), list, item],
+        )
     }
     /// Insert object before index of the list value.
     #[inline]
@@ -751,27 +883,42 @@ impl<'ctx> DerivedValueCalculationMethods for LLVMCodeGenContext<'ctx> {
     /// Dict get the value of the key.
     #[inline]
     fn dict_get(&self, dict: Self::Value, key: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_dict_get_value.name(), &[dict, key])
+        self.build_call(
+            &ApiFunc::kclvm_dict_get_value.name(),
+            &[self.current_runtime_ctx_ptr(), dict, key],
+        )
     }
     /// Dict set the value of the key.
     #[inline]
     fn dict_set(&self, dict: Self::Value, key: Self::Value, value: Self::Value) {
-        self.build_void_call(&ApiFunc::kclvm_dict_set_value.name(), &[dict, key, value])
+        self.build_void_call(
+            &ApiFunc::kclvm_dict_set_value.name(),
+            &[self.current_runtime_ctx_ptr(), dict, key, value],
+        )
     }
     /// Return all dict keys.
     #[inline]
     fn dict_keys(&self, dict: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_dict_keys.name(), &[dict])
+        self.build_call(
+            &ApiFunc::kclvm_dict_keys.name(),
+            &[self.current_runtime_ctx_ptr(), dict],
+        )
     }
     /// Return all dict values.
     #[inline]
     fn dict_values(&self, dict: Self::Value) -> Self::Value {
-        self.build_call(&ApiFunc::kclvm_dict_values.name(), &[dict])
+        self.build_call(
+            &ApiFunc::kclvm_dict_values.name(),
+            &[self.current_runtime_ctx_ptr(), dict],
+        )
     }
     /// Dict clear value.
     #[inline]
     fn dict_clear(&self, dict: Self::Value) {
-        self.build_void_call(&ApiFunc::kclvm_dict_insert_value.name(), &[dict])
+        self.build_void_call(
+            &ApiFunc::kclvm_dict_insert_value.name(),
+            &[self.current_runtime_ctx_ptr(), dict],
+        )
     }
     /// Dict pop the value of the key.
     #[inline]
@@ -799,7 +946,14 @@ impl<'ctx> DerivedValueCalculationMethods for LLVMCodeGenContext<'ctx> {
         let insert_index = self.native_int_value(insert_index);
         self.build_void_call(
             &ApiFunc::kclvm_dict_insert.name(),
-            &[dict, name, value, op, insert_index],
+            &[
+                self.current_runtime_ctx_ptr(),
+                dict,
+                name,
+                value,
+                op,
+                insert_index,
+            ],
         );
     }
 
@@ -818,7 +972,14 @@ impl<'ctx> DerivedValueCalculationMethods for LLVMCodeGenContext<'ctx> {
         let insert_index = self.native_int_value(insert_index);
         self.build_void_call(
             &ApiFunc::kclvm_dict_insert_value.name(),
-            &[dict, key, value, op, insert_index],
+            &[
+                self.current_runtime_ctx_ptr(),
+                dict,
+                key,
+                value,
+                op,
+                insert_index,
+            ],
         );
     }
 }
@@ -1061,6 +1222,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         program: &'ctx ast::Program,
         import_names: IndexMap<String, IndexMap<String, String>>,
         no_link: bool,
+        workdir: String,
     ) -> LLVMCodeGenContext<'ctx> {
         LLVMCodeGenContext {
             context,
@@ -1072,7 +1234,8 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             imported: RefCell::new(HashSet::new()),
             local_vars: RefCell::new(HashSet::new()),
             schema_stack: RefCell::new(vec![]),
-            lambda_stack: RefCell::new(vec![false]),
+            // 0 denotes the top global main function lambda.
+            lambda_stack: RefCell::new(vec![0]),
             schema_expr_stack: RefCell::new(vec![]),
             pkgpath_stack: RefCell::new(vec![String::from(MAIN_PKG_PATH)]),
             filename_stack: RefCell::new(vec![String::from("")]),
@@ -1086,6 +1249,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             import_names,
             no_link,
             modules: RefCell::new(HashMap::new()),
+            workdir,
         }
     }
 
@@ -1159,6 +1323,22 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                 self.pkgpath_stack.borrow_mut().push(pkgpath.clone());
             }
         }
+        // Set the kcl module path to the runtime context
+        self.build_void_call(
+            &ApiFunc::kclvm_context_set_kcl_modpath.name(),
+            &[
+                self.current_runtime_ctx_ptr(),
+                self.native_global_string_value(&self.program.root),
+            ],
+        );
+        // Set the kcl workdir to the runtime context
+        self.build_void_call(
+            &ApiFunc::kclvm_context_set_kcl_workdir.name(),
+            &[
+                self.current_runtime_ctx_ptr(),
+                self.native_global_string_value(&self.workdir),
+            ],
+        );
         if !self.import_names.is_empty() {
             let import_names = self.dict_value();
             for (k, v) in &self.import_names {
@@ -1177,18 +1357,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                 &[ctx_value, import_names],
             );
         }
-        // Store the runtime context to global
-        if !self.no_link {
-            let global_ctx = self.module.add_global(
-                context_ptr_type,
-                Some(AddressSpace::default()),
-                KCL_CONTEXT_VAR_NAME,
-            );
-            global_ctx.set_alignment(GLOBAL_VAL_ALIGNMENT);
-            global_ctx.set_initializer(&context_ptr_type.const_zero());
-            self.builder
-                .build_store(global_ctx.as_pointer_value(), ctx_value);
-        }
+        // Main package
         if self.no_link && !has_main_pkg {
             // When compiling a pkgpath separately, only one pkgpath is required in the AST Program
             assert!(self.program.pkgs.len() == 1);
@@ -1198,24 +1367,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                 self.pkgpath_stack.borrow_mut().push(pkgpath.clone());
                 // Init all builtin functions.
                 self.init_scope(pkgpath.as_str());
-                // Compile the ast module in the pkgpath.
-                for ast_module in modules {
-                    {
-                        self.filename_stack
-                            .borrow_mut()
-                            .push(ast_module.filename.clone());
-                    }
-                    self.compile_module_import_and_types(ast_module)
-                }
-                for ast_module in modules {
-                    {
-                        self.filename_stack
-                            .borrow_mut()
-                            .push(ast_module.filename.clone());
-                    }
-                    self.walk_stmts_except_import(&ast_module.body)
-                        .expect(kcl_error::COMPILE_ERROR_MSG);
-                }
+                self.compile_ast_modules(modules);
             }
             self.ret_void();
         } else {
@@ -1226,16 +1378,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                 .pkgs
                 .get(MAIN_PKG_PATH)
                 .expect(kcl_error::INTERNAL_ERROR_MSG);
-            // Compile the AST Program to LLVM IR
-            for ast_module in main_pkg_modules {
-                {
-                    self.filename_stack
-                        .borrow_mut()
-                        .push(ast_module.filename.clone());
-                }
-                self.walk_module(ast_module)
-                    .expect(kcl_error::COMPILE_ERROR_MSG);
-            }
+            self.compile_ast_modules(main_pkg_modules);
             // Get the JSON string including all global variables
             let json_str_value = self.globals_to_json_str();
             // Build a return in the current block
@@ -1263,6 +1406,51 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             }
         }
         Ok(())
+    }
+
+    /// Compile AST Modules, which requires traversing three times.
+    /// 1. scan all possible global variables and allocate undefined values to global pointers.
+    /// 2. build all user-defined schema/rule types.
+    /// 3. generate all LLVM IR codes for the third time.
+    fn compile_ast_modules(&self, modules: &'ctx [ast::Module]) {
+        // Scan global variables
+        for ast_module in modules {
+            {
+                self.filename_stack
+                    .borrow_mut()
+                    .push(ast_module.filename.clone());
+            }
+            // Pre define global variables with undefined values
+            self.predefine_global_vars(ast_module);
+            {
+                self.filename_stack.borrow_mut().pop();
+            }
+        }
+        // Scan global types
+        for ast_module in modules {
+            {
+                self.filename_stack
+                    .borrow_mut()
+                    .push(ast_module.filename.clone());
+            }
+            self.compile_module_import_and_types(ast_module);
+            {
+                self.filename_stack.borrow_mut().pop();
+            }
+        }
+        // Compile the ast module in the pkgpath.
+        for ast_module in modules {
+            {
+                self.filename_stack
+                    .borrow_mut()
+                    .push(ast_module.filename.clone());
+            }
+            self.walk_module(ast_module)
+                .expect(kcl_error::COMPILE_ERROR_MSG);
+            {
+                self.filename_stack.borrow_mut().pop();
+            }
+        }
     }
 
     /// Build LLVM module to a `.o` object file.
@@ -1398,7 +1586,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         let mut pkg_scopes = self.pkg_scopes.borrow_mut();
         let scopes = pkg_scopes
             .get_mut(&current_pkgpath)
-            .expect(&format!("pkgpath {} is not found", current_pkgpath));
+            .unwrap_or_else(|| panic!("pkgpath {} is not found", current_pkgpath));
         if let Some(last) = scopes.last_mut() {
             let mut scalars = last.scalars.borrow_mut();
             // TODO: To avoid conflicts, only the last schema scalar expressions are allowed.
@@ -1447,12 +1635,12 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
     pub fn store_variable_in_current_scope(&self, name: &str, value: BasicValueEnum<'ctx>) -> bool {
         // Find argument name in the scope
         let current_pkgpath = self.current_pkgpath();
-        let mut pkg_scopes = self.pkg_scopes.borrow_mut();
+        let pkg_scopes = self.pkg_scopes.borrow();
         let msg = format!("pkgpath {} is not found", current_pkgpath);
-        let scopes = pkg_scopes.get_mut(&current_pkgpath).expect(&msg);
+        let scopes = pkg_scopes.get(&current_pkgpath).expect(&msg);
         let index = scopes.len() - 1;
-        let variables_mut = scopes[index].variables.borrow_mut();
-        if let Some(var) = variables_mut.get(&name.to_string()) {
+        let variables = scopes[index].variables.borrow();
+        if let Some(var) = variables.get(&name.to_string()) {
             self.builder.build_store(*var, value);
             return true;
         }
@@ -1463,13 +1651,13 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
     pub fn store_variable(&self, name: &str, value: BasicValueEnum<'ctx>) -> bool {
         // Find argument name in the scope
         let current_pkgpath = self.current_pkgpath();
-        let mut pkg_scopes = self.pkg_scopes.borrow_mut();
+        let pkg_scopes = self.pkg_scopes.borrow();
         let msg = format!("pkgpath {} is not found", current_pkgpath);
-        let scopes = pkg_scopes.get_mut(&current_pkgpath).expect(&msg);
+        let scopes = pkg_scopes.get(&current_pkgpath).expect(&msg);
         for i in 0..scopes.len() {
             let index = scopes.len() - i - 1;
-            let variables_mut = scopes[index].variables.borrow_mut();
-            if let Some(var) = variables_mut.get(&name.to_string()) {
+            let variables = scopes[index].variables.borrow();
+            if let Some(var) = variables.get(&name.to_string()) {
                 self.builder.build_store(*var, value);
                 return true;
             }
@@ -1481,14 +1669,14 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
     pub fn resolve_variable(&self, name: &str) -> bool {
         // Find argument name in the scope
         let current_pkgpath = self.current_pkgpath();
-        let mut pkg_scopes = self.pkg_scopes.borrow_mut();
+        let pkg_scopes = self.pkg_scopes.borrow();
         let msg = format!("pkgpath {} is not found", current_pkgpath);
-        let scopes = pkg_scopes.get_mut(&current_pkgpath).expect(&msg);
+        let scopes = pkg_scopes.get(&current_pkgpath).expect(&msg);
         let mut existed = false;
         for i in 0..scopes.len() {
             let index = scopes.len() - i - 1;
-            let variables_mut = scopes[index].variables.borrow_mut();
-            if variables_mut.get(&name.to_string()).is_some() {
+            let variables = scopes[index].variables.borrow();
+            if variables.get(&name.to_string()).is_some() {
                 existed = true;
                 break;
             }
@@ -1542,8 +1730,8 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         let scopes = pkg_scopes.get_mut(&current_pkgpath).expect(&msg);
         let mut existed = false;
         if let Some(last) = scopes.last_mut() {
-            let variables_mut = last.variables.borrow_mut();
-            if let Some(var) = variables_mut.get(&name.to_string()) {
+            let variables = last.variables.borrow();
+            if let Some(var) = variables.get(&name.to_string()) {
                 self.builder.build_store(*var, value);
                 existed = true;
             }
@@ -1604,7 +1792,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         self.builder.position_at_end(then_block);
         let target_attr = self
             .target_vars
-            .borrow_mut()
+            .borrow()
             .last()
             .expect(kcl_error::INTERNAL_ERROR_MSG)
             .clone();
@@ -1631,6 +1819,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             self.build_call(
                 &ApiFunc::kclvm_schema_get_value.name(),
                 &[
+                    self.current_runtime_ctx_ptr(),
                     schema_value,
                     string_ptr_value,
                     config,
@@ -1663,7 +1852,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
 
     /// Get the variable value named `name` from the scope named `pkgpath`, return Err when not found
     pub fn get_variable_in_pkgpath(&self, name: &str, pkgpath: &str) -> CompileResult<'ctx> {
-        let pkg_scopes = self.pkg_scopes.borrow_mut();
+        let pkg_scopes = self.pkg_scopes.borrow();
         let pkgpath =
             if !pkgpath.starts_with(kclvm_runtime::PKG_PATH_PREFIX) && pkgpath != MAIN_PKG_PATH {
                 format!("{}{}", kclvm_runtime::PKG_PATH_PREFIX, pkgpath)
@@ -1674,6 +1863,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             message: format!("name '{}' is not defined", name),
             ty: kcl_error::KCLErrorType::Compile,
         });
+        let is_in_schema = self.schema_stack.borrow().len() > 0;
         // System module
         if builtin::STANDARD_SYSTEM_MODULE_NAMES_WITH_AT.contains(&pkgpath.as_str()) {
             let pkgpath = &pkgpath[1..];
@@ -1707,6 +1897,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                 self.build_call(
                     &ApiFunc::kclvm_value_Function.name(),
                     &[
+                        self.current_runtime_ctx_ptr(),
                         lambda_fn_ptr,
                         none_value,
                         func_name_ptr,
@@ -1729,37 +1920,54 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             let none_value = self.none_value();
             return Ok(self.build_call(
                 &ApiFunc::kclvm_value_Function.name(),
-                &[null_fn_ptr, none_value, name, self.native_i8(1).into()],
+                &[
+                    self.current_runtime_ctx_ptr(),
+                    null_fn_ptr,
+                    none_value,
+                    name,
+                    self.native_i8(1).into(),
+                ],
             ));
         // User pkgpath
         } else {
+            // Global or local variables.
             let scopes = pkg_scopes
                 .get(&pkgpath)
                 .unwrap_or_else(|| panic!("package {} is not found", pkgpath));
             // Scopes 0 is builtin scope, Scopes 1 is the global scope, Scopes 2~ are the local scopes
             let scopes_len = scopes.len();
-            let last_scopes = scopes.last().expect(kcl_error::INTERNAL_ERROR_MSG);
-            let mut closures_mut = last_scopes.closures.borrow_mut();
             for i in 0..scopes_len {
                 let index = scopes_len - i - 1;
-                let variables_mut = scopes[index].variables.borrow_mut();
-                if let Some(var) = variables_mut.get(&name.to_string()) {
-                    // Closure vars, 2 denotes the builtin scope and the global scope
+                let variables = scopes[index].variables.borrow();
+                if let Some(var) = variables.get(&name.to_string()) {
+                    // Closure vars, 2 denotes the builtin scope and the global scope, here is a closure scope.
                     let value = if i >= 1 && i < scopes_len - 2 {
-                        closures_mut.insert(name.to_string(), *var);
-                        let variables = last_scopes.variables.borrow();
-                        let ptr = variables.get(value::LAMBDA_CLOSURE);
-                        // Lambda closure
-                        match ptr {
-                            Some(ptr) => {
-                                let closure_map = self.builder.build_load(*ptr, "");
-                                let string_ptr_value = self.native_global_string(name, "").into();
-                                self.build_call(
-                                    &ApiFunc::kclvm_dict_get_value.name(),
-                                    &[closure_map, string_ptr_value],
-                                )
+                        let last_lambda_scope = self.last_lambda_scope();
+                        // Local scope variable
+                        if index >= last_lambda_scope {
+                            self.builder.build_load(*var, name)
+                        } else {
+                            // Outer lamba closure
+                            let variables = scopes[last_lambda_scope].variables.borrow();
+                            let ptr = variables.get(value::LAMBDA_CLOSURE);
+                            // Lambda closure
+                            match ptr {
+                                Some(ptr) => {
+                                    let closure_map = self.builder.build_load(*ptr, "");
+                                    let string_ptr_value =
+                                        self.native_global_string(name, "").into();
+                                    // Not a closure, mapbe a local variale
+                                    self.build_call(
+                                        &ApiFunc::kclvm_dict_get_value.name(),
+                                        &[
+                                            self.current_runtime_ctx_ptr(),
+                                            closure_map,
+                                            string_ptr_value,
+                                        ],
+                                    )
+                                }
+                                None => self.builder.build_load(*var, name),
                             }
-                            None => self.builder.build_load(*var, name),
                         }
                     } else {
                         self.builder.build_load(*var, name)
@@ -1771,17 +1979,14 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             match result {
                 Ok(_) => result,
                 Err(ref err) => {
-                    let is_in_schema = self.schema_stack.borrow().len() > 0;
                     if !is_in_schema {
                         let mut handler = self.handler.borrow_mut();
-                        handler.add_compile_error(
-                            &err.message,
-                            Position {
-                                filename: self.current_filename(),
-                                line: *self.current_line.borrow(),
-                                column: None,
-                            },
-                        );
+                        let pos = Position {
+                            filename: self.current_filename(),
+                            line: *self.current_line.borrow(),
+                            column: None,
+                        };
+                        handler.add_compile_error(&err.message, (pos.clone(), pos));
                         handler.abort_if_any_errors()
                     }
                     result
@@ -1812,9 +2017,9 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         // User module external variable
         let external_var_name = format!("${}.${}", pkgpath_without_prefix!(ext_pkgpath), name);
         let current_pkgpath = self.current_pkgpath();
-        let modules = self.modules.borrow_mut();
+        let modules = self.modules.borrow();
         let msg = format!("pkgpath {} is not found", current_pkgpath);
-        let module = modules.get(&current_pkgpath).expect(&msg).borrow_mut();
+        let module = modules.get(&current_pkgpath).expect(&msg).borrow();
         let tpe = self.value_ptr_type();
         let mut global_var_maps = self.global_vars.borrow_mut();
         let pkgpath = self.current_pkgpath();
@@ -1838,11 +2043,11 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         Ok(value)
     }
 
-    /// Get closure map in the current scope.
-    pub(crate) fn get_closure_map(&self) -> BasicValueEnum<'ctx> {
-        // Get closures in the current scope.
-        let closure_map = self.dict_value();
-        {
+    /// Get closure map in the current inner scope.
+    pub(crate) fn get_current_inner_scope_variable_map(&self) -> BasicValueEnum<'ctx> {
+        let var_map = {
+            let last_lambda_scope = self.last_lambda_scope();
+            // Get variable map in the current scope.
             let pkgpath = self.current_pkgpath();
             let pkgpath = if !pkgpath.starts_with(PKG_PATH_PREFIX) && pkgpath != MAIN_PKG_PATH {
                 format!("{}{}", PKG_PATH_PREFIX, pkgpath)
@@ -1853,28 +2058,35 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
             let scopes = pkg_scopes
                 .get(&pkgpath)
                 .unwrap_or_else(|| panic!("package {} is not found", pkgpath));
-            // Clouure variable must be inner of the global scope.
-            if scopes.len() > INNER_LEVEL {
-                let closures = scopes
-                    .last()
-                    .expect(kcl_error::INTERNAL_ERROR_MSG)
-                    .closures
-                    .borrow();
-                // Curret scope vaiable.
-                let variables = scopes
-                    .get(scopes.len() - INNER_LEVEL)
-                    .expect(kcl_error::INTERNAL_ERROR_MSG)
-                    .variables
-                    .borrow();
-                // Transverse all scope and capture closures except the builtin amd global scope.
-                for (key, ptr) in &*closures {
-                    if variables.contains_key(key) {
-                        let value = self.builder.build_load(*ptr, "");
-                        self.dict_insert_override_item(closure_map, key.as_str(), value);
+            let current_scope = scopes.len() - 1;
+            // Get last closure map.
+            let var_map = if current_scope >= last_lambda_scope && last_lambda_scope > 0 {
+                let variables = scopes[last_lambda_scope].variables.borrow();
+                let ptr = variables.get(value::LAMBDA_CLOSURE);
+                let var_map = match ptr {
+                    Some(ptr) => self.builder.build_load(*ptr, ""),
+                    None => self.dict_value(),
+                };
+                // Get variable map including schema  in the current scope.
+                for i in last_lambda_scope..current_scope + 1 {
+                    let variables = scopes
+                        .get(i)
+                        .expect(kcl_error::INTERNAL_ERROR_MSG)
+                        .variables
+                        .borrow();
+                    for (key, ptr) in &*variables {
+                        if key != value::LAMBDA_CLOSURE {
+                            let value = self.builder.build_load(*ptr, "");
+                            self.dict_insert_override_item(var_map, key.as_str(), value);
+                        }
                     }
-                } // Curret scope vaiable.
-            }
-        }
+                }
+                var_map
+            } else {
+                self.dict_value()
+            };
+            var_map
+        };
         // Capture schema `self` closure.
         let is_in_schema = self.schema_stack.borrow().len() > 0;
         if is_in_schema {
@@ -1882,10 +2094,41 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                 let value = self
                     .get_variable(shcmea_closure_name)
                     .expect(kcl_error::INTERNAL_ERROR_MSG);
-                self.dict_insert_override_item(closure_map, shcmea_closure_name, value);
+                self.dict_insert_override_item(var_map, shcmea_closure_name, value);
             }
         }
-        closure_map
+        var_map
+    }
+
+    /// Push a lambda definition scope into the lambda stack
+    #[inline]
+    pub fn push_lambda(&self, scope: usize) {
+        self.lambda_stack.borrow_mut().push(scope);
+    }
+
+    /// Pop a lambda definition scope.
+    #[inline]
+    pub fn pop_lambda(&self) {
+        self.lambda_stack.borrow_mut().pop();
+    }
+
+    #[inline]
+    pub fn is_in_lambda(&self) -> bool {
+        *self
+            .lambda_stack
+            .borrow()
+            .last()
+            .expect(kcl_error::INTERNAL_ERROR_MSG)
+            > 0
+    }
+
+    #[inline]
+    pub fn last_lambda_scope(&self) -> usize {
+        *self
+            .lambda_stack
+            .borrow()
+            .last()
+            .expect(kcl_error::INTERNAL_ERROR_MSG)
     }
 
     /// Push a function call frame into the function stack
@@ -1913,26 +2156,29 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
     /// Plan globals to a json string
     pub fn globals_to_json_str(&self) -> BasicValueEnum<'ctx> {
         let current_pkgpath = self.current_pkgpath();
-        let mut pkg_scopes = self.pkg_scopes.borrow_mut();
+        let pkg_scopes = self.pkg_scopes.borrow();
         let scopes = pkg_scopes
-            .get_mut(&current_pkgpath)
-            .expect(&format!("pkgpath {} is not found", current_pkgpath));
+            .get(&current_pkgpath)
+            .unwrap_or_else(|| panic!("pkgpath {} is not found", current_pkgpath));
         // The global scope.
         let scope = scopes.last().expect(kcl_error::INTERNAL_ERROR_MSG);
         let scalars = scope.scalars.borrow();
         let globals = scope.variables.borrow();
         // Construct a plan object.
         let global_dict = self.dict_value();
+        // Plan empty dict result.
+        if scalars.is_empty() && globals.is_empty() {
+            return self.build_call(
+                &ApiFunc::kclvm_value_plan_to_json.name(),
+                &[self.current_runtime_ctx_ptr(), global_dict],
+            );
+        }
         // Deal scalars
         for scalar in scalars.iter() {
-            self.dict_safe_insert(global_dict, SCALAR_KEY, scalar.clone(), 0, -1);
+            self.dict_safe_insert(global_dict, SCALAR_KEY, *scalar, 0, -1);
         }
         // Deal global variables
         for (name, ptr) in globals.iter() {
-            // Omit private variables and function variables
-            if name.starts_with(kclvm_runtime::KCL_PRIVATE_VAR_PREFIX) {
-                continue;
-            }
             let value = self.builder.build_load(*ptr, "");
             let value_dict = self.dict_value();
             self.dict_safe_insert(value_dict, name.as_str(), value, 0, -1);
@@ -1941,10 +2187,13 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         // Plan result to json string.
         self.build_call(
             &ApiFunc::kclvm_value_plan_to_json.name(),
-            &[self.dict_get(
-                global_dict,
-                self.native_global_string(SCALAR_KEY, "").into(),
-            )],
+            &[
+                self.current_runtime_ctx_ptr(),
+                self.dict_get(
+                    global_dict,
+                    self.native_global_string(SCALAR_KEY, "").into(),
+                ),
+            ],
         )
     }
 
@@ -1963,7 +2212,14 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         let insert_index = self.native_int_value(insert_index);
         self.build_void_call(
             &ApiFunc::kclvm_dict_safe_insert.name(),
-            &[dict, name, value, op, insert_index],
+            &[
+                self.current_runtime_ctx_ptr(),
+                dict,
+                name,
+                value,
+                op,
+                insert_index,
+            ],
         );
     }
 
@@ -1983,7 +2239,14 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         let insert_index = self.native_int_value(insert_index);
         self.build_void_call(
             &ApiFunc::kclvm_dict_merge.name(),
-            &[dict, name, value, op, insert_index],
+            &[
+                self.current_runtime_ctx_ptr(),
+                dict,
+                name,
+                value,
+                op,
+                insert_index,
+            ],
         );
     }
 

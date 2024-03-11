@@ -12,11 +12,30 @@ impl ConfigNestAttrTransformer {
     pub fn walk_config_entry(&mut self, config_entry: &mut Box<ast::Node<ast::ConfigEntry>>) {
         if let Some(key) = config_entry.node.key.as_mut() {
             if let ast::Expr::Identifier(identifier) = &mut key.node {
+                // desuger config expr, e.g., desuger
+                // ```
+                // foo = Foo {
+                //     bar.baz : xxx
+                // }
+                // ```
+                // to:
+                // ```
+                // foo = Foo {
+                //     bar : Bar {
+                //         baz : xxx
+                //     }
+                // }
+                // ```
                 if identifier.names.len() > 1 {
                     let mut names = identifier.names.clone();
                     let names = &mut names[1..];
                     names.reverse();
                     identifier.names = vec![identifier.names[0].clone()];
+                    key.filename = identifier.names[0].filename.clone();
+                    key.line = identifier.names[0].line;
+                    key.column = identifier.names[0].column;
+                    key.end_line = identifier.names[0].end_line;
+                    key.end_column = identifier.names[0].end_column;
 
                     let mut value = config_entry.node.value.clone();
                     for (i, name) in names.iter().enumerate() {
@@ -29,11 +48,11 @@ impl ConfigNestAttrTransformer {
                         let entry_value = ast::ConfigEntry {
                             key: Some(Box::new(ast::Node::new(
                                 ast::Expr::Identifier(name_node),
-                                key.filename.clone(),
-                                key.line,
-                                key.column,
-                                key.end_line,
-                                key.end_column,
+                                name.filename.clone(),
+                                name.line,
+                                name.column,
+                                name.end_line,
+                                name.end_column,
                             ))),
                             value: value.clone(),
                             operation: if is_last_item {
@@ -46,18 +65,18 @@ impl ConfigNestAttrTransformer {
                         let config_expr = ast::ConfigExpr {
                             items: vec![Box::new(ast::Node::new(
                                 entry_value,
-                                key.filename.clone(),
-                                key.line,
-                                key.column,
-                                key.end_line,
-                                key.end_column,
+                                config_entry.filename.clone(),
+                                name.line,
+                                name.column,
+                                config_entry.end_line,
+                                config_entry.end_column,
                             ))],
                         };
                         value = Box::new(ast::Node::new(
                             ast::Expr::Config(config_expr),
                             value.filename.clone(),
-                            value.line,
-                            value.column,
+                            name.line,
+                            name.column,
                             value.end_line,
                             value.end_column,
                         ))
@@ -114,7 +133,7 @@ impl ConfigMergeTransformer {
                         ast::Stmt::Unification(unification_stmt)
                             if !unification_stmt.target.node.names.is_empty() =>
                         {
-                            let name = &unification_stmt.target.node.names[0];
+                            let name = &unification_stmt.target.node.names[0].node;
                             match name_declaration_mapping.get_mut(name) {
                                 Some(declarations) => declarations.push((
                                     module.filename.to_string(),
@@ -139,7 +158,7 @@ impl ConfigMergeTransformer {
                             if let ast::Expr::Schema(_) = assign_stmt.value.node {
                                 for target in &assign_stmt.targets {
                                     if target.node.names.len() == 1 {
-                                        let name = &target.node.names[0];
+                                        let name = &target.node.names[0].node;
                                         match name_declaration_mapping.get_mut(name) {
                                             Some(declarations) => {
                                                 // A hidden var is mutable.

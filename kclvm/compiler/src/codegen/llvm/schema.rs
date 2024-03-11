@@ -3,6 +3,7 @@
 use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::AddressSpace;
 use kclvm_ast::ast;
+use kclvm_sema::pkgpath_without_prefix;
 use std::collections::HashMap;
 use std::str;
 
@@ -11,13 +12,12 @@ use crate::codegen::error as kcl_error;
 use crate::codegen::traits::{BuilderMethods, DerivedValueCalculationMethods, ValueMethods};
 use crate::value;
 
-use crate::pkgpath_without_prefix;
-
 impl<'ctx> LLVMCodeGenContext<'ctx> {
-    /// Emit all schema left identifiers because all the schema attribute can be forward referenced
-    pub fn emit_schema_left_identifiers(
+    /// Emit all left identifiers because all the attribute can be forward referenced.
+    pub fn emit_left_identifiers(
         &self,
         body: &'ctx [Box<ast::Node<ast::Stmt>>],
+        index_signature: &'ctx Option<ast::NodeRef<ast::SchemaIndexSignature>>,
         cal_map: BasicValueEnum<'ctx>,
         runtime_type: &str,
         is_in_if: bool,
@@ -69,10 +69,18 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                 let body_vec = body_map.get_mut(name).expect(kcl_error::INTERNAL_ERROR_MSG);
                 body_vec.push(stmt);
             };
+        if let Some(index_signature) = index_signature {
+            self.default_collection_insert_value(
+                cal_map,
+                kclvm_runtime::CAL_MAP_INDEX_SIGNATURE,
+                self.int_value(index_signature.line as i64),
+            );
+            place_holder_map.insert(kclvm_runtime::CAL_MAP_INDEX_SIGNATURE.to_string(), vec![]);
+        }
         for stmt in body {
             match &stmt.node {
                 ast::Stmt::Unification(unification_stmt) => {
-                    let name = &unification_stmt.target.node.names[0];
+                    let name = &unification_stmt.target.node.names[0].node;
                     self.dict_merge(schema_value, name, value, 0, -1);
                     if is_in_if {
                         in_if_names.push(name.to_string());
@@ -82,7 +90,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                 }
                 ast::Stmt::Assign(assign_stmt) => {
                     for target in &assign_stmt.targets {
-                        let name = &target.node.names[0];
+                        let name = &target.node.names[0].node;
                         self.dict_merge(schema_value, name, value, 0, -1);
                         if is_in_if {
                             in_if_names.push(name.to_string());
@@ -93,7 +101,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                 }
                 ast::Stmt::AugAssign(aug_assign_stmt) => {
                     let target = &aug_assign_stmt.target;
-                    let name = &target.node.names[0];
+                    let name = &target.node.names[0].node;
                     self.dict_merge(schema_value, name, value, 0, -1);
                     if is_in_if {
                         in_if_names.push(name.to_string());
@@ -103,8 +111,9 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                 }
                 ast::Stmt::If(if_stmt) => {
                     let mut names: Vec<String> = vec![];
-                    self.emit_schema_left_identifiers(
+                    self.emit_left_identifiers(
                         &if_stmt.body,
+                        &None,
                         cal_map,
                         runtime_type,
                         true,
@@ -122,8 +131,9 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
                         }
                         names.clear();
                     }
-                    self.emit_schema_left_identifiers(
+                    self.emit_left_identifiers(
                         &if_stmt.orelse,
+                        &None,
                         cal_map,
                         runtime_type,
                         true,
@@ -173,7 +183,7 @@ impl<'ctx> LLVMCodeGenContext<'ctx> {
         for item in &t.items {
             if let Some(key) = &item.node.key {
                 let name = match &key.node {
-                    ast::Expr::Identifier(t) => t.names[0].clone(),
+                    ast::Expr::Identifier(t) => t.names[0].node.clone(),
                     ast::Expr::NumberLit(t) => match t.value {
                         ast::NumberLitValue::Int(i) => i.to_string(),
                         ast::NumberLitValue::Float(f) => f.to_string(),

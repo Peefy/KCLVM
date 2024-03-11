@@ -1,12 +1,12 @@
 ---
 source: parser/src/tests/error_recovery.rs
-assertion_line: 151
+assertion_line: 176
 expression: "crate::tests::parsing_module_string(r#\"a() = b. = c\"#)"
 ---
 Module {
     filename: "",
     pkg: "",
-    doc: "",
+    doc: None,
     name: "",
     body: [
         Node {
@@ -28,8 +28,22 @@ Module {
                         Node {
                             node: Identifier {
                                 names: [
-                                    "b",
-                                    "",
+                                    Node {
+                                        node: "b",
+                                        filename: "",
+                                        line: 1,
+                                        column: 6,
+                                        end_line: 1,
+                                        end_column: 7,
+                                    },
+                                    Node {
+                                        node: "",
+                                        filename: "",
+                                        line: 1,
+                                        column: 9,
+                                        end_line: 1,
+                                        end_column: 9,
+                                    },
                                 ],
                                 pkgpath: "",
                                 ctx: Store,
@@ -45,7 +59,14 @@ Module {
                         node: Identifier(
                             Identifier {
                                 names: [
-                                    "c",
+                                    Node {
+                                        node: "c",
+                                        filename: "",
+                                        line: 1,
+                                        column: 11,
+                                        end_line: 1,
+                                        end_column: 12,
+                                    },
                                 ],
                                 pkgpath: "",
                                 ctx: Load,
@@ -57,7 +78,6 @@ Module {
                         end_line: 1,
                         end_column: 12,
                     },
-                    type_annotation: None,
                     ty: None,
                 },
             ),

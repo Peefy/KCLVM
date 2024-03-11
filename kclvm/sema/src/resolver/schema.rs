@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::builtin::BUILTIN_DECORATORS;
@@ -7,6 +8,7 @@ use crate::ty::{Decorator, DecoratorTarget, TypeKind};
 use kclvm_ast::ast;
 use kclvm_ast::pos::GetPos;
 use kclvm_ast::walker::MutSelfTypedResultWalker;
+use kclvm_ast_pretty::{print_ast_node, ASTNode};
 use kclvm_error::{ErrorKind, Message, Position, Style};
 
 use super::node::ResolvedResult;
@@ -17,24 +19,38 @@ impl<'ctx> Resolver<'ctx> {
         &mut self,
         schema_stmt: &'ctx ast::SchemaStmt,
     ) -> ResolvedResult {
-        self.resolve_unique_key(&schema_stmt.name.node, &schema_stmt.name.get_pos());
-        let ty = self.lookup_type_from_scope(&schema_stmt.name.node, schema_stmt.name.get_pos());
+        let (start, end) = (self.ctx.start_pos.clone(), self.ctx.end_pos.clone());
+        self.resolve_unique_key(&schema_stmt.name.node, &schema_stmt.name.get_span_pos());
+        let ty =
+            self.lookup_type_from_scope(&schema_stmt.name.node, schema_stmt.name.get_span_pos());
+        self.node_ty_map
+            .insert(self.get_node_key(schema_stmt.name.id.clone()), ty.clone());
         let scope_ty = if ty.is_schema() {
             ty.into_schema_type()
         } else {
             self.handler.add_error(
                 ErrorKind::TypeError,
                 &[Message {
-                    pos: schema_stmt.get_pos(),
+                    range: schema_stmt.get_span_pos(),
                     style: Style::LineAndColumn,
                     message: format!("expected schema type, got {}", ty.ty_str()),
                     note: None,
+                    suggested_replacement: None,
                 }],
             );
             return ty;
         };
         self.ctx.schema = Some(Rc::new(RefCell::new(scope_ty.clone())));
-        let (start, end) = schema_stmt.get_span_pos();
+        if let Some(args) = &schema_stmt.args {
+            for (i, arg) in args.node.args.iter().enumerate() {
+                let ty = args.node.get_arg_type_node(i);
+                let ty = self.parse_ty_with_scope(ty, arg.get_span_pos());
+                if let Some(name) = arg.node.names.last() {
+                    self.node_ty_map
+                        .insert(self.get_node_key(name.id.clone()), ty.clone());
+                }
+            }
+        }
         self.do_parameters_check(&schema_stmt.args);
         self.enter_scope(
             start.clone(),
@@ -50,7 +66,6 @@ impl<'ctx> Resolver<'ctx> {
                     end: end.clone(),
                     ty: param.ty.clone(),
                     kind: ScopeObjectKind::Parameter,
-                    used: false,
                     doc: None,
                 },
             )
@@ -59,6 +74,7 @@ impl<'ctx> Resolver<'ctx> {
         if let (Some(index_signature), Some(index_signature_node)) =
             (scope_ty.index_signature, &schema_stmt.index_signature)
         {
+            // Insert the schema index signature key name into the scope.
             if let Some(key_name) = index_signature.key_name {
                 let (start, end) = index_signature_node.get_span_pos();
                 self.insert_object(
@@ -69,10 +85,20 @@ impl<'ctx> Resolver<'ctx> {
                         end,
                         ty: index_signature.key_ty.clone(),
                         kind: ScopeObjectKind::Variable,
-                        used: false,
                         doc: None,
                     },
                 )
+            }
+            // Check index signature default value type.
+            if let Some(value) = &index_signature_node.node.value {
+                let expected_ty = index_signature.val_ty;
+                let value_ty = self.expr(value);
+                self.must_assignable_to(
+                    value_ty,
+                    expected_ty,
+                    index_signature_node.get_span_pos(),
+                    None,
+                );
             }
         }
         let schema_attr_names = schema_stmt.get_left_identifier_list();
@@ -90,7 +116,6 @@ impl<'ctx> Resolver<'ctx> {
                         end: Position::dummy_pos(),
                         ty: self.any_ty(),
                         kind: ScopeObjectKind::Variable,
-                        used: false,
                         doc: None,
                     },
                 );
@@ -108,18 +133,21 @@ impl<'ctx> Resolver<'ctx> {
     }
 
     pub(crate) fn resolve_rule_stmt(&mut self, rule_stmt: &'ctx ast::RuleStmt) -> ResolvedResult {
-        self.resolve_unique_key(&rule_stmt.name.node, &rule_stmt.name.get_pos());
-        let ty = self.lookup_type_from_scope(&rule_stmt.name.node, rule_stmt.name.get_pos());
+        self.resolve_unique_key(&rule_stmt.name.node, &rule_stmt.name.get_span_pos());
+        let ty = self.lookup_type_from_scope(&rule_stmt.name.node, rule_stmt.name.get_span_pos());
+        self.node_ty_map
+            .insert(self.get_node_key(rule_stmt.name.id.clone()), ty.clone());
         let scope_ty = if ty.is_schema() {
             ty.into_schema_type()
         } else {
             self.handler.add_error(
                 ErrorKind::TypeError,
                 &[Message {
-                    pos: rule_stmt.get_pos(),
+                    range: rule_stmt.get_span_pos(),
                     style: Style::LineAndColumn,
                     message: format!("expected rule type, got {}", ty.ty_str()),
                     note: None,
+                    suggested_replacement: None,
                 }],
             );
             return ty;
@@ -141,7 +169,6 @@ impl<'ctx> Resolver<'ctx> {
                     end: end.clone(),
                     ty: param.ty.clone(),
                     kind: ScopeObjectKind::Parameter,
-                    used: false,
                     doc: None,
                 },
             )
@@ -165,7 +192,7 @@ impl<'ctx> Resolver<'ctx> {
         for decorator in decorators {
             let name = if let ast::Expr::Identifier(identifier) = &decorator.node.func.node {
                 if identifier.names.len() == 1 {
-                    Some(identifier.names[0].clone())
+                    Some(identifier.names[0].node.clone())
                 } else {
                     None
                 }
@@ -177,15 +204,21 @@ impl<'ctx> Resolver<'ctx> {
                     Some(ty) => match &ty.kind {
                         TypeKind::Function(func_ty) => {
                             self.do_arguments_type_check(
-                                &decorator.node.func.node,
+                                &decorator.node.func,
                                 &decorator.node.args,
                                 &decorator.node.keywords,
-                                &func_ty.params,
+                                &func_ty,
+                            );
+                            let (arguments, keywords) = self.arguments_to_string(
+                                &decorator.node.args,
+                                &decorator.node.keywords,
                             );
                             decorator_objs.push(Decorator {
                                 target: target.clone(),
                                 name,
                                 key: key.to_string(),
+                                arguments,
+                                keywords,
                             })
                         }
                         _ => bug!("invalid builtin decorator function type"),
@@ -193,18 +226,47 @@ impl<'ctx> Resolver<'ctx> {
                     None => {
                         self.handler.add_compile_error(
                             &format!("UnKnown decorator {}", name),
-                            decorator.get_pos(),
+                            decorator.get_span_pos(),
                         );
                     }
                 },
                 None => {
                     self.handler.add_type_error(
                         "decorator name must be a single identifier",
-                        decorator.get_pos(),
+                        decorator.get_span_pos(),
                     );
                 }
             }
         }
         decorator_objs
+    }
+
+    fn arguments_to_string(
+        &mut self,
+        args: &'ctx [ast::NodeRef<ast::Expr>],
+        kwargs: &'ctx [ast::NodeRef<ast::Keyword>],
+    ) -> (Vec<String>, HashMap<String, String>) {
+        if self.options.resolve_val {
+            (
+                args.iter()
+                    .map(|a| print_ast_node(ASTNode::Expr(a)))
+                    .collect(),
+                kwargs
+                    .iter()
+                    .map(|a| {
+                        (
+                            a.node.arg.node.get_name(),
+                            a.node
+                                .value
+                                .as_ref()
+                                .map(|v| print_ast_node(ASTNode::Expr(v)))
+                                .unwrap_or_default(),
+                        )
+                    })
+                    .collect(),
+            )
+        } else {
+            (vec![], HashMap::new())
+        }
     }
 }

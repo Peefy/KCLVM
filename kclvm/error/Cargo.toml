@@ -1,6 +1,6 @@
 [package]
 name = "kclvm-error"
-version = "0.5.0"
+version = "0.8.1"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -16,6 +16,7 @@ kclvm-runtime = {path = "../runtime"}
 anyhow = "1.0"
 tracing = "0.1"
 atty = "0.2"
-annotate-snippets = { version = "0.9.0", default-features = false, features = ["color"] }
+annotate-snippets = { version = "0.9.2", default-features = false, features = ["color"] }
 termize = "0.1.1"
 indexmap = "1.0"
+serde_json = "1.0.86"

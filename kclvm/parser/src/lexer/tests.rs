@@ -21,23 +21,52 @@ impl ParseSession {
     }
 }
 
-fn check_lexing(src: &str, expect: Expect) {
+/// lexing the 'src'.
+fn lex(src: &str) -> (String, String) {
     let sm = SourceMap::new(FilePathMapping::empty());
-    let sf = sm.new_source_file(PathBuf::from("").into(), src.to_string());
+    sm.new_source_file(PathBuf::from("").into(), src.to_string());
     let sess = &ParseSession::with_source_map(Arc::new(sm));
 
-    match sf.src.as_ref() {
-        Some(src_from_sf) => {
-            create_session_globals_then(|| {
-                let actual: String = parse_token_streams(sess, src_from_sf, new_byte_pos(0))
-                    .iter()
-                    .map(|token| format!("{token:?}\n"))
-                    .collect();
-                expect.assert_eq(&actual)
-            });
+    // preprocess the input str by [`SourceFile`]
+    let sf = sess
+        .0
+        .sm
+        .new_source_file(PathBuf::from("").into(), src.to_string());
+
+    let src_from_sf = match sf.src.as_ref() {
+        Some(src) => src,
+        None => {
+            panic!("Unreachable code")
         }
-        None => todo!(),
     };
+
+    let res = create_session_globals_then(|| {
+        parse_token_streams(sess, src_from_sf, new_byte_pos(0))
+            .iter()
+            .map(|token| format!("{:?}\n", token))
+            .collect()
+    });
+
+    let err_msgs = sess
+        .0
+        .emit_all_diags_into_string()
+        .unwrap()
+        .iter()
+        .map(|err| err.as_ref().unwrap().to_string())
+        .collect();
+
+    (res, err_msgs)
+}
+
+/// check the invalid panic message.
+fn check_lexing_with_err_msg(src: &str, expect: Expect, expect_err_msg: Expect) {
+    let (got, got_err) = lex(src);
+    expect.assert_eq(&got);
+    expect_err_msg.assert_eq(&got_err);
+}
+
+fn check_lexing(src: &str, expect: Expect) {
+    expect.assert_eq(&lex(src).0);
 }
 
 // Get the code snippets from 'src' by token.span, and compare with expect.
@@ -373,29 +402,29 @@ println("end")
             Token { kind: Ident(Symbol(SymbolIndex { idx: 42 })), span: Span { base_or_index: 4, len_or_tag: 5 } }
             Token { kind: Colon, span: Span { base_or_index: 9, len_or_tag: 1 } }
             Token { kind: Newline, span: Span { base_or_index: 10, len_or_tag: 1 } }
-            Token { kind: Indent, span: Span { base_or_index: 15, len_or_tag: 0 } }
+            Token { kind: Indent(0), span: Span { base_or_index: 15, len_or_tag: 0 } }
             Token { kind: Ident(Symbol(SymbolIndex { idx: 10 })), span: Span { base_or_index: 15, len_or_tag: 2 } }
             Token { kind: Ident(Symbol(SymbolIndex { idx: 43 })), span: Span { base_or_index: 18, len_or_tag: 5 } }
             Token { kind: Colon, span: Span { base_or_index: 23, len_or_tag: 1 } }
             Token { kind: Newline, span: Span { base_or_index: 24, len_or_tag: 1 } }
-            Token { kind: Indent, span: Span { base_or_index: 33, len_or_tag: 0 } }
+            Token { kind: Indent(0), span: Span { base_or_index: 33, len_or_tag: 0 } }
             Token { kind: Ident(Symbol(SymbolIndex { idx: 44 })), span: Span { base_or_index: 33, len_or_tag: 7 } }
             Token { kind: OpenDelim(Paren), span: Span { base_or_index: 40, len_or_tag: 1 } }
             Token { kind: Literal(Lit { kind: Str { is_long_string: false, is_raw: false }, symbol: Symbol(SymbolIndex { idx: 45 }), suffix: None, raw: Some(Symbol(SymbolIndex { idx: 46 })) }), span: Span { base_or_index: 41, len_or_tag: 11 } }
             Token { kind: CloseDelim(Paren), span: Span { base_or_index: 52, len_or_tag: 1 } }
             Token { kind: Newline, span: Span { base_or_index: 53, len_or_tag: 1 } }
-            Token { kind: Dedent, span: Span { base_or_index: 58, len_or_tag: 0 } }
+            Token { kind: Dedent(0), span: Span { base_or_index: 58, len_or_tag: 0 } }
             Token { kind: Ident(Symbol(SymbolIndex { idx: 12 })), span: Span { base_or_index: 58, len_or_tag: 4 } }
             Token { kind: Colon, span: Span { base_or_index: 62, len_or_tag: 1 } }
             Token { kind: Newline, span: Span { base_or_index: 63, len_or_tag: 1 } }
-            Token { kind: Indent, span: Span { base_or_index: 72, len_or_tag: 0 } }
+            Token { kind: Indent(0), span: Span { base_or_index: 72, len_or_tag: 0 } }
             Token { kind: Ident(Symbol(SymbolIndex { idx: 44 })), span: Span { base_or_index: 72, len_or_tag: 7 } }
             Token { kind: OpenDelim(Paren), span: Span { base_or_index: 79, len_or_tag: 1 } }
             Token { kind: Literal(Lit { kind: Str { is_long_string: false, is_raw: false }, symbol: Symbol(SymbolIndex { idx: 47 }), suffix: None, raw: Some(Symbol(SymbolIndex { idx: 48 })) }), span: Span { base_or_index: 80, len_or_tag: 12 } }
             Token { kind: CloseDelim(Paren), span: Span { base_or_index: 92, len_or_tag: 1 } }
             Token { kind: Newline, span: Span { base_or_index: 93, len_or_tag: 1 } }
-            Token { kind: Dedent, span: Span { base_or_index: 94, len_or_tag: 0 } }
-            Token { kind: Dedent, span: Span { base_or_index: 94, len_or_tag: 0 } }
+            Token { kind: Dedent(0), span: Span { base_or_index: 94, len_or_tag: 0 } }
+            Token { kind: Dedent(0), span: Span { base_or_index: 94, len_or_tag: 0 } }
             Token { kind: Ident(Symbol(SymbolIndex { idx: 44 })), span: Span { base_or_index: 94, len_or_tag: 7 } }
             Token { kind: OpenDelim(Paren), span: Span { base_or_index: 101, len_or_tag: 1 } }
             Token { kind: Literal(Lit { kind: Str { is_long_string: false, is_raw: false }, symbol: Symbol(SymbolIndex { idx: 49 }), suffix: None, raw: Some(Symbol(SymbolIndex { idx: 50 })) }), span: Span { base_or_index: 102, len_or_tag: 5 } }
@@ -440,12 +469,12 @@ Schema (1, 2) {
         Token { kind: CloseDelim(Paren), span: Span { base_or_index: 13, len_or_tag: 1 } }
         Token { kind: OpenDelim(Brace), span: Span { base_or_index: 15, len_or_tag: 1 } }
         Token { kind: Newline, span: Span { base_or_index: 16, len_or_tag: 1 } }
-        Token { kind: Indent, span: Span { base_or_index: 21, len_or_tag: 0 } }
+        Token { kind: Indent(0), span: Span { base_or_index: 21, len_or_tag: 0 } }
         Token { kind: Ident(Symbol(SymbolIndex { idx: 43 })), span: Span { base_or_index: 21, len_or_tag: 1 } }
         Token { kind: Assign, span: Span { base_or_index: 22, len_or_tag: 1 } }
         Token { kind: Ident(Symbol(SymbolIndex { idx: 44 })), span: Span { base_or_index: 23, len_or_tag: 1 } }
         Token { kind: Newline, span: Span { base_or_index: 24, len_or_tag: 1 } }
-        Token { kind: Dedent, span: Span { base_or_index: 25, len_or_tag: 0 } }
+        Token { kind: Dedent(0), span: Span { base_or_index: 25, len_or_tag: 0 } }
         Token { kind: CloseDelim(Brace), span: Span { base_or_index: 25, len_or_tag: 1 } }
         Token { kind: Newline, span: Span { base_or_index: 26, len_or_tag: 1 } }
         Token { kind: Eof, span: Span { base_or_index: 27, len_or_tag: 0 } }
@@ -468,12 +497,12 @@ fn schema_expr_1() {
         Token { kind: CloseDelim(Paren), span: Span { base_or_index: 12, len_or_tag: 1 } }
         Token { kind: OpenDelim(Brace), span: Span { base_or_index: 14, len_or_tag: 1 } }
         Token { kind: Newline, span: Span { base_or_index: 15, len_or_tag: 1 } }
-        Token { kind: Indent, span: Span { base_or_index: 20, len_or_tag: 0 } }
+        Token { kind: Indent(0), span: Span { base_or_index: 20, len_or_tag: 0 } }
         Token { kind: Ident(Symbol(SymbolIndex { idx: 43 })), span: Span { base_or_index: 20, len_or_tag: 1 } }
         Token { kind: Assign, span: Span { base_or_index: 21, len_or_tag: 1 } }
         Token { kind: Ident(Symbol(SymbolIndex { idx: 44 })), span: Span { base_or_index: 22, len_or_tag: 1 } }
         Token { kind: Newline, span: Span { base_or_index: 23, len_or_tag: 1 } }
-        Token { kind: Dedent, span: Span { base_or_index: 24, len_or_tag: 0 } }
+        Token { kind: Dedent(0), span: Span { base_or_index: 24, len_or_tag: 0 } }
         Token { kind: CloseDelim(Brace), span: Span { base_or_index: 24, len_or_tag: 1 } }
         Token { kind: Newline, span: Span { base_or_index: 25, len_or_tag: 0 } }
         Token { kind: Eof, span: Span { base_or_index: 25, len_or_tag: 0 } }
@@ -614,7 +643,7 @@ fn test_parse_token_stream_on_win() {
             Token { kind: Ident(Symbol(SymbolIndex { idx: 42 })), span: Span { base_or_index: 8, len_or_tag: 6 } }
             Token { kind: Colon, span: Span { base_or_index: 14, len_or_tag: 1 } }
             Token { kind: Newline, span: Span { base_or_index: 15, len_or_tag: 1 } }
-            Token { kind: Indent, span: Span { base_or_index: 20, len_or_tag: 0 } }
+            Token { kind: Indent(0), span: Span { base_or_index: 20, len_or_tag: 0 } }
             Token { kind: Ident(Symbol(SymbolIndex { idx: 43 })), span: Span { base_or_index: 20, len_or_tag: 4 } }
             Token { kind: Colon, span: Span { base_or_index: 24, len_or_tag: 1 } }
             Token { kind: Ident(Symbol(SymbolIndex { idx: 31 })), span: Span { base_or_index: 26, len_or_tag: 3 } }
@@ -622,7 +651,7 @@ fn test_parse_token_stream_on_win() {
             Token { kind: Literal(Lit { kind: Str { is_long_string: false, is_raw: false }, symbol: Symbol(SymbolIndex { idx: 44 }), suffix: None, raw: Some(Symbol(SymbolIndex { idx: 45 })) }), span: Span { base_or_index: 32, len_or_tag: 5 } }
             Token { kind: Newline, span: Span { base_or_index: 37, len_or_tag: 1 } }
             Token { kind: Newline, span: Span { base_or_index: 38, len_or_tag: 1 } }
-            Token { kind: Dedent, span: Span { base_or_index: 39, len_or_tag: 0 } }
+            Token { kind: Dedent(0), span: Span { base_or_index: 39, len_or_tag: 0 } }
             Token { kind: Ident(Symbol(SymbolIndex { idx: 46 })), span: Span { base_or_index: 39, len_or_tag: 2 } }
             Token { kind: Assign, span: Span { base_or_index: 42, len_or_tag: 1 } }
             Token { kind: Ident(Symbol(SymbolIndex { idx: 42 })), span: Span { base_or_index: 44, len_or_tag: 6 } }
@@ -630,6 +659,193 @@ fn test_parse_token_stream_on_win() {
             Token { kind: CloseDelim(Brace), span: Span { base_or_index: 52, len_or_tag: 1 } }
             Token { kind: Newline, span: Span { base_or_index: 53, len_or_tag: 1 } }
             Token { kind: Eof, span: Span { base_or_index: 54, len_or_tag: 0 } }
+        "#]],
+    );
+}
+
+#[test]
+fn test_rarrow() {
+    check_lexing(
+        "lambda x: int, y: int -> int { x + y }\n",
+        expect![[r#"
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 18 })), span: Span { base_or_index: 0, len_or_tag: 6 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 42 })), span: Span { base_or_index: 7, len_or_tag: 1 } }
+        Token { kind: Colon, span: Span { base_or_index: 8, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 30 })), span: Span { base_or_index: 10, len_or_tag: 3 } }
+        Token { kind: Comma, span: Span { base_or_index: 13, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 43 })), span: Span { base_or_index: 15, len_or_tag: 1 } }
+        Token { kind: Colon, span: Span { base_or_index: 16, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 30 })), span: Span { base_or_index: 18, len_or_tag: 3 } }
+        Token { kind: RArrow, span: Span { base_or_index: 22, len_or_tag: 2 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 30 })), span: Span { base_or_index: 25, len_or_tag: 3 } }
+        Token { kind: OpenDelim(Brace), span: Span { base_or_index: 29, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 42 })), span: Span { base_or_index: 31, len_or_tag: 1 } }
+        Token { kind: BinOp(Plus), span: Span { base_or_index: 33, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 43 })), span: Span { base_or_index: 35, len_or_tag: 1 } }
+        Token { kind: CloseDelim(Brace), span: Span { base_or_index: 37, len_or_tag: 1 } }
+        Token { kind: Newline, span: Span { base_or_index: 38, len_or_tag: 1 } }
+        Token { kind: Eof, span: Span { base_or_index: 39, len_or_tag: 0 } }
+        "#]],
+    );
+}
+
+#[test]
+fn test_minus_unicode_gt_invalid() {
+    check_lexing_with_err_msg(
+        "lambda x: int, y: int -\u{feff}> int { x + y }\n",
+        expect![[r#"
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 18 })), span: Span { base_or_index: 0, len_or_tag: 6 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 42 })), span: Span { base_or_index: 7, len_or_tag: 1 } }
+        Token { kind: Colon, span: Span { base_or_index: 8, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 30 })), span: Span { base_or_index: 10, len_or_tag: 3 } }
+        Token { kind: Comma, span: Span { base_or_index: 13, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 43 })), span: Span { base_or_index: 15, len_or_tag: 1 } }
+        Token { kind: Colon, span: Span { base_or_index: 16, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 30 })), span: Span { base_or_index: 18, len_or_tag: 3 } }
+        Token { kind: RArrow, span: Span { base_or_index: 25, len_or_tag: 2 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 30 })), span: Span { base_or_index: 28, len_or_tag: 3 } }
+        Token { kind: OpenDelim(Brace), span: Span { base_or_index: 32, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 42 })), span: Span { base_or_index: 34, len_or_tag: 1 } }
+        Token { kind: BinOp(Plus), span: Span { base_or_index: 36, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 43 })), span: Span { base_or_index: 38, len_or_tag: 1 } }
+        Token { kind: CloseDelim(Brace), span: Span { base_or_index: 40, len_or_tag: 1 } }
+        Token { kind: Newline, span: Span { base_or_index: 41, len_or_tag: 1 } }
+        Token { kind: Eof, span: Span { base_or_index: 42, len_or_tag: 0 } }
+        "#]],
+        expect![["error[E1001]: InvalidSyntax\nunknown start of token\n\n"]],
+    );
+}
+
+#[test]
+fn test_unicode_minus_gt_invalid() {
+    check_lexing_with_err_msg(
+        "lambda x: int, y: int \u{feff}-> int { x + y }\n",
+        expect![[r#"
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 18 })), span: Span { base_or_index: 0, len_or_tag: 6 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 42 })), span: Span { base_or_index: 7, len_or_tag: 1 } }
+        Token { kind: Colon, span: Span { base_or_index: 8, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 30 })), span: Span { base_or_index: 10, len_or_tag: 3 } }
+        Token { kind: Comma, span: Span { base_or_index: 13, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 43 })), span: Span { base_or_index: 15, len_or_tag: 1 } }
+        Token { kind: Colon, span: Span { base_or_index: 16, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 30 })), span: Span { base_or_index: 18, len_or_tag: 3 } }
+        Token { kind: RArrow, span: Span { base_or_index: 25, len_or_tag: 2 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 30 })), span: Span { base_or_index: 28, len_or_tag: 3 } }
+        Token { kind: OpenDelim(Brace), span: Span { base_or_index: 32, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 42 })), span: Span { base_or_index: 34, len_or_tag: 1 } }
+        Token { kind: BinOp(Plus), span: Span { base_or_index: 36, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 43 })), span: Span { base_or_index: 38, len_or_tag: 1 } }
+        Token { kind: CloseDelim(Brace), span: Span { base_or_index: 40, len_or_tag: 1 } }
+        Token { kind: Newline, span: Span { base_or_index: 41, len_or_tag: 1 } }
+        Token { kind: Eof, span: Span { base_or_index: 42, len_or_tag: 0 } }
+        "#]],
+        expect![["error[E1001]: InvalidSyntax\nunknown start of token\n\n"]],
+    );
+}
+
+#[test]
+fn test_minus_gt_unicode_invalid() {
+    check_lexing_with_err_msg(
+        "lambda x: int, y: int ->\u{feff} int { x + y }\n",
+        expect![[r#"
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 18 })), span: Span { base_or_index: 0, len_or_tag: 6 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 42 })), span: Span { base_or_index: 7, len_or_tag: 1 } }
+        Token { kind: Colon, span: Span { base_or_index: 8, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 30 })), span: Span { base_or_index: 10, len_or_tag: 3 } }
+        Token { kind: Comma, span: Span { base_or_index: 13, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 43 })), span: Span { base_or_index: 15, len_or_tag: 1 } }
+        Token { kind: Colon, span: Span { base_or_index: 16, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 30 })), span: Span { base_or_index: 18, len_or_tag: 3 } }
+        Token { kind: RArrow, span: Span { base_or_index: 22, len_or_tag: 2 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 30 })), span: Span { base_or_index: 28, len_or_tag: 3 } }
+        Token { kind: OpenDelim(Brace), span: Span { base_or_index: 32, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 42 })), span: Span { base_or_index: 34, len_or_tag: 1 } }
+        Token { kind: BinOp(Plus), span: Span { base_or_index: 36, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 43 })), span: Span { base_or_index: 38, len_or_tag: 1 } }
+        Token { kind: CloseDelim(Brace), span: Span { base_or_index: 40, len_or_tag: 1 } }
+        Token { kind: Newline, span: Span { base_or_index: 41, len_or_tag: 1 } }
+        Token { kind: Eof, span: Span { base_or_index: 42, len_or_tag: 0 } }
+        "#]],
+        expect![["error[E1001]: InvalidSyntax\nunknown start of token\n\n"]],
+    );
+}
+
+#[test]
+fn test_only_minus() {
+    check_lexing(
+        "-",
+        expect![[r#"
+        Token { kind: BinOp(Minus), span: Span { base_or_index: 0, len_or_tag: 1 } }
+        Token { kind: Newline, span: Span { base_or_index: 1, len_or_tag: 0 } }
+        Token { kind: Eof, span: Span { base_or_index: 1, len_or_tag: 0 } }
+        "#]],
+    );
+}
+
+#[test]
+fn test_begin_with_minus() {
+    check_lexing(
+        "-123",
+        expect![[r#"
+        Token { kind: BinOp(Minus), span: Span { base_or_index: 0, len_or_tag: 1 } }
+        Token { kind: Literal(Lit { kind: Integer, symbol: Symbol(SymbolIndex { idx: 42 }), suffix: None, raw: None }), span: Span { base_or_index: 1, len_or_tag: 3 } }
+        Token { kind: Newline, span: Span { base_or_index: 4, len_or_tag: 0 } }
+        Token { kind: Eof, span: Span { base_or_index: 4, len_or_tag: 0 } }
+        "#]],
+    );
+}
+
+#[test]
+fn test_only_gt() {
+    check_lexing(
+        ">",
+        expect![[r#"
+        Token { kind: BinCmp(Gt), span: Span { base_or_index: 0, len_or_tag: 1 } }
+        Token { kind: Newline, span: Span { base_or_index: 1, len_or_tag: 0 } }
+        Token { kind: Eof, span: Span { base_or_index: 1, len_or_tag: 0 } }
+        "#]],
+    );
+}
+
+#[test]
+fn test_begin_with_gt() {
+    check_lexing(
+        ">sdjkd + ==",
+        expect![[r#"
+        Token { kind: BinCmp(Gt), span: Span { base_or_index: 0, len_or_tag: 1 } }
+        Token { kind: Ident(Symbol(SymbolIndex { idx: 42 })), span: Span { base_or_index: 1, len_or_tag: 5 } }
+        Token { kind: BinOp(Plus), span: Span { base_or_index: 7, len_or_tag: 1 } }
+        Token { kind: BinCmp(Eq), span: Span { base_or_index: 9, len_or_tag: 2 } }
+        Token { kind: Newline, span: Span { base_or_index: 11, len_or_tag: 0 } }
+        Token { kind: Eof, span: Span { base_or_index: 11, len_or_tag: 0 } }
+        "#]],
+    );
+}
+
+#[test]
+fn test_double_rarrow() {
+    check_lexing(
+        "->->",
+        expect![[r#"
+        Token { kind: RArrow, span: Span { base_or_index: 0, len_or_tag: 2 } }
+        Token { kind: RArrow, span: Span { base_or_index: 2, len_or_tag: 2 } }
+        Token { kind: Newline, span: Span { base_or_index: 4, len_or_tag: 0 } }
+        Token { kind: Eof, span: Span { base_or_index: 4, len_or_tag: 0 } }
+        "#]],
+    );
+}
+
+#[test]
+fn test_mess_rarrow() {
+    check_lexing(
+        "-->>->",
+        expect![[r#"
+        Token { kind: BinOp(Minus), span: Span { base_or_index: 0, len_or_tag: 1 } }
+        Token { kind: BinOp(Minus), span: Span { base_or_index: 1, len_or_tag: 1 } }
+        Token { kind: BinOp(Shr), span: Span { base_or_index: 2, len_or_tag: 2 } }
+        Token { kind: RArrow, span: Span { base_or_index: 4, len_or_tag: 2 } }
+        Token { kind: Newline, span: Span { base_or_index: 6, len_or_tag: 0 } }
+        Token { kind: Eof, span: Span { base_or_index: 6, len_or_tag: 0 } }
         "#]],
     );
 }

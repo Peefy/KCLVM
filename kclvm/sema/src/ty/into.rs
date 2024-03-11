@@ -3,7 +3,7 @@ use super::*;
 impl Type {
     /// Downcast ty into the list type.
     #[inline]
-    pub fn list_item_ty(&self) -> Rc<Type> {
+    pub fn list_item_ty(&self) -> TypeRef {
         match &self.kind {
             TypeKind::List(item_ty) => item_ty.clone(),
             _ => bug!("invalid list type {}", self.ty_str()),
@@ -11,33 +11,35 @@ impl Type {
     }
     /// Downcast ty into the dict entry type.
     #[inline]
-    pub fn dict_entry_ty(&self) -> (Rc<Type>, Rc<Type>) {
+    pub fn dict_entry_ty(&self) -> (TypeRef, TypeRef) {
         match &self.kind {
-            TypeKind::Dict(key_ty, val_ty) => (key_ty.clone(), val_ty.clone()),
+            TypeKind::Dict(DictType { key_ty, val_ty, .. }) => (key_ty.clone(), val_ty.clone()),
             _ => bug!("invalid dict type {}", self.ty_str()),
         }
     }
     /// Downcast ty into the config key type.
     #[inline]
-    pub fn config_key_ty(&self) -> Rc<Type> {
+    pub fn config_key_ty(&self) -> TypeRef {
         match &self.kind {
-            TypeKind::Dict(key_ty, _) => key_ty.clone(),
+            TypeKind::Dict(DictType { key_ty, .. }) => key_ty.clone(),
             TypeKind::Schema(schema_ty) => schema_ty.key_ty(),
             _ => bug!("invalid config type {}", self.ty_str()),
         }
     }
     /// Downcast ty into the config value type.
     #[inline]
-    pub fn config_val_ty(&self) -> Rc<Type> {
+    pub fn config_val_ty(&self) -> TypeRef {
         match &self.kind {
-            TypeKind::Dict(_, val_ty) => val_ty.clone(),
+            TypeKind::Dict(DictType {
+                key_ty: _, val_ty, ..
+            }) => val_ty.clone(),
             TypeKind::Schema(schema_ty) => schema_ty.val_ty(),
             _ => bug!("invalid config type {}", self.ty_str()),
         }
     }
     /// Get types from the union type.
     #[inline]
-    pub fn union_types(&self) -> Vec<Rc<Type>> {
+    pub fn union_types(&self) -> Vec<TypeRef> {
         match &self.kind {
             TypeKind::Union(types) => types.clone(),
             _ => bug!("invalid {} into union type", self.ty_str()),
@@ -49,6 +51,14 @@ impl Type {
         match &self.kind {
             TypeKind::Schema(schema_ty) => schema_ty.clone(),
             _ => bug!("invalid type {} into schema type", self.ty_str()),
+        }
+    }
+    /// Into function type.
+    #[inline]
+    pub fn into_func_type(&self) -> FunctionType {
+        match &self.kind {
+            TypeKind::Function(func_ty) => func_ty.clone(),
+            _ => bug!("invalid type {} into function type", self.ty_str()),
         }
     }
     /// Into number multiplier type.
@@ -79,7 +89,7 @@ impl Type {
             }
             TypeKind::StrLit(v) => format!("\"{}\"", v.replace('"', "\\\"")),
             TypeKind::List(item_ty) => format!("[{}]", item_ty.into_type_annotation_str()),
-            TypeKind::Dict(key_ty, val_ty) => {
+            TypeKind::Dict(DictType { key_ty, val_ty, .. }) => {
                 format!(
                     "{{{}:{}}}",
                     key_ty.into_type_annotation_str(),
@@ -90,7 +100,7 @@ impl Type {
                 .iter()
                 .map(|ty| ty.into_type_annotation_str())
                 .collect::<Vec<String>>()
-                .join("|"),
+                .join(" | "),
             TypeKind::Schema(schema_ty) => schema_ty.ty_str_with_pkgpath(),
             TypeKind::NumberMultiplier(number_multiplier) => {
                 if number_multiplier.is_literal {
@@ -104,6 +114,7 @@ impl Type {
                     NUMBER_MULTIPLIER_PKG_TYPE_STR.to_string()
                 }
             }
+            TypeKind::Function(fn_ty) => fn_ty.ty_str(),
             _ => self.ty_str(),
         }
     }
@@ -124,28 +135,31 @@ impl From<ast::Type> for Type {
                 list_ty
                     .inner_type
                     .as_ref()
-                    .map_or(Rc::new(Type::ANY), |ty| Rc::new(ty.node.clone().into())),
+                    .map_or(Arc::new(Type::ANY), |ty| Arc::new(ty.node.clone().into())),
             ),
             ast::Type::Dict(dict_ty) => Type::dict(
                 dict_ty
                     .key_type
                     .as_ref()
-                    .map_or(Rc::new(Type::ANY), |ty| Rc::new(ty.node.clone().into())),
+                    .map_or(Arc::new(Type::ANY), |ty| Arc::new(ty.node.clone().into())),
                 dict_ty
                     .value_type
                     .as_ref()
-                    .map_or(Rc::new(Type::ANY), |ty| Rc::new(ty.node.clone().into())),
+                    .map_or(Arc::new(Type::ANY), |ty| Arc::new(ty.node.clone().into())),
             ),
             ast::Type::Union(union_ty) => Type::union(
                 &union_ty
                     .type_elements
                     .iter()
-                    .map(|ty| Rc::new(ty.node.clone().into()))
-                    .collect::<Vec<Rc<Type>>>(),
+                    .map(|ty| Arc::new(ty.node.clone().into()))
+                    .collect::<Vec<TypeRef>>(),
             ),
             ast::Type::Literal(literal_ty) => match literal_ty {
                 ast::LiteralType::Bool(v) => Type::bool_lit(v),
-                ast::LiteralType::Int(v, suffix_option) => match suffix_option {
+                ast::LiteralType::Int(ast::IntLiteralType {
+                    value: v,
+                    suffix: suffix_option,
+                }) => match suffix_option {
                     Some(suffix) => Type::number_multiplier(
                         kclvm_runtime::cal_num(v, &suffix.value()),
                         v,
@@ -156,6 +170,29 @@ impl From<ast::Type> for Type {
                 ast::LiteralType::Float(v) => Type::float_lit(v),
                 ast::LiteralType::Str(v) => Type::str_lit(&v),
             },
+            // Ast::function => Sema::function,
+            ast::Type::Function(func_ty) => Type::function(
+                None,
+                func_ty
+                    .ret_ty
+                    .as_ref()
+                    .map_or(Arc::new(Type::ANY), |ty| Arc::new(ty.node.clone().into())),
+                func_ty
+                    .params_ty
+                    .map_or(vec![], |tys| {
+                        tys.iter()
+                            .map(|ty| Parameter {
+                                name: "".to_string(),
+                                ty: Arc::new(ty.node.clone().into()),
+                                has_default: false,
+                            })
+                            .collect::<Vec<Parameter>>()
+                    })
+                    .as_slice(),
+                "",
+                false,
+                None,
+            ),
         }
     }
 }

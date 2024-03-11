@@ -1,23 +1,48 @@
 use super::*;
 
 impl Type {
+    /// Construct an int type reference.
+    #[inline]
+    pub fn int_ref() -> TypeRef {
+        Arc::new(Type::INT)
+    }
+    /// Construct a float type reference.
+    #[inline]
+    pub fn float_ref() -> TypeRef {
+        Arc::new(Type::FLOAT)
+    }
+    /// Construct a bool type reference.
+    #[inline]
+    pub fn bool_ref() -> TypeRef {
+        Arc::new(Type::BOOL)
+    }
+    /// Construct a str type reference.
+    #[inline]
+    pub fn str_ref() -> TypeRef {
+        Arc::new(Type::STR)
+    }
+    /// Construct a any type reference.
+    #[inline]
+    pub fn any_ref() -> TypeRef {
+        Arc::new(Type::ANY)
+    }
     /// Construct a union type
     #[inline]
-    pub fn union(types: &[Rc<Type>]) -> Type {
+    pub fn union(types: &[TypeRef]) -> Type {
         Type {
             kind: TypeKind::Union(types.to_owned()),
             flags: TypeFlags::UNION,
             is_type_alias: false,
         }
     }
-    /// Construct a union type ref
+    /// Construct an union type reference.
     #[inline]
-    pub fn union_ref(types: &[Rc<Type>]) -> Rc<Type> {
-        Rc::new(Self::union(types))
+    pub fn union_ref(types: &[TypeRef]) -> TypeRef {
+        Arc::new(Self::union(types))
     }
     /// Construct a list type
     #[inline]
-    pub fn list(item_ty: Rc<Type>) -> Type {
+    pub fn list(item_ty: TypeRef) -> Type {
         Type {
             kind: TypeKind::List(item_ty),
             flags: TypeFlags::LIST,
@@ -26,22 +51,52 @@ impl Type {
     }
     /// Construct a list type ref
     #[inline]
-    pub fn list_ref(item_ty: Rc<Type>) -> Rc<Type> {
-        Rc::new(Self::list(item_ty))
+    pub fn list_ref(item_ty: TypeRef) -> TypeRef {
+        Arc::new(Self::list(item_ty))
     }
     /// Construct a dict type
     #[inline]
-    pub fn dict(key_ty: Rc<Type>, val_ty: Rc<Type>) -> Type {
+    pub fn dict(key_ty: TypeRef, val_ty: TypeRef) -> Type {
         Type {
-            kind: TypeKind::Dict(key_ty, val_ty),
+            kind: TypeKind::Dict(DictType {
+                key_ty,
+                val_ty,
+                attrs: IndexMap::new(),
+            }),
             flags: TypeFlags::DICT,
             is_type_alias: false,
         }
     }
     /// Construct a dict type ref
     #[inline]
-    pub fn dict_ref(key_ty: Rc<Type>, val_ty: Rc<Type>) -> Rc<Type> {
-        Rc::new(Self::dict(key_ty, val_ty))
+    pub fn dict_ref(key_ty: TypeRef, val_ty: TypeRef) -> TypeRef {
+        Arc::new(Self::dict(key_ty, val_ty))
+    }
+    /// Construct a dict type with attrs
+    #[inline]
+    pub fn dict_with_attrs(
+        key_ty: TypeRef,
+        val_ty: TypeRef,
+        attrs: IndexMap<String, Attr>,
+    ) -> Type {
+        Type {
+            kind: TypeKind::Dict(DictType {
+                key_ty,
+                val_ty,
+                attrs,
+            }),
+            flags: TypeFlags::DICT,
+            is_type_alias: false,
+        }
+    }
+    /// Construct a dict type reference with attrs
+    #[inline]
+    pub fn dict_ref_with_attrs(
+        key_ty: TypeRef,
+        val_ty: TypeRef,
+        attrs: IndexMap<String, Attr>,
+    ) -> TypeRef {
+        Arc::new(Self::dict_with_attrs(key_ty, val_ty, attrs))
     }
     /// Construct a bool literal type.
     #[inline]
@@ -118,8 +173,8 @@ impl Type {
     /// Construct a function type.
     #[inline]
     pub fn function(
-        self_ty: Option<Rc<Type>>,
-        return_ty: Rc<Type>,
+        self_ty: Option<TypeRef>,
+        return_ty: TypeRef,
         params: &[Parameter],
         doc: &str,
         is_variadic: bool,
@@ -159,20 +214,18 @@ impl Type {
         }
     }
     /// Construct a iterable type
-    pub fn iterable() -> Rc<Type> {
-        Rc::new(Type::union(&[
-            Rc::new(Type::STR),
-            Rc::new(Type::dict(Rc::new(Type::ANY), Rc::new(Type::ANY))),
-            Rc::new(Type::list(Rc::new(Type::ANY))),
+    #[inline]
+    pub fn iterable() -> TypeRef {
+        Arc::new(Type::union(&[
+            Arc::new(Type::STR),
+            Arc::new(Type::dict(Arc::new(Type::ANY), Arc::new(Type::ANY))),
+            Arc::new(Type::list(Arc::new(Type::ANY))),
         ]))
     }
     /// Construct a number type
-    pub fn number() -> Rc<Type> {
-        Rc::new(Type::union(&[
-            Rc::new(Type::INT),
-            Rc::new(Type::FLOAT),
-            Rc::new(Type::STR),
-        ]))
+    #[inline]
+    pub fn number() -> TypeRef {
+        Type::union_ref(&[Type::int_ref(), Type::float_ref(), Type::bool_ref()])
     }
     /// Whether is a any type.
     #[inline]
@@ -310,7 +363,7 @@ impl Type {
             | TypeKind::Str
             | TypeKind::StrLit(_)
             | TypeKind::List(_)
-            | TypeKind::Dict(_, _)
+            | TypeKind::Dict(DictType { .. })
             | TypeKind::Union(_)
             | TypeKind::Schema(_)
             | TypeKind::NumberMultiplier(_)

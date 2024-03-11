@@ -13,6 +13,7 @@ use kclvm_config::settings::load_file;
 use kclvm_parser::load_program;
 use kclvm_parser::ParseSession;
 use kclvm_sema::resolver::resolve_program;
+use serde_json::Value;
 use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,6 +23,7 @@ use std::{
     fs::{self, File},
 };
 use tempfile::tempdir;
+use uuid::Uuid;
 use walkdir::WalkDir;
 
 const MULTI_FILE_TEST_CASES: &[&str; 5] = &[
@@ -140,7 +142,7 @@ fn gen_full_path(rel_path: String) -> Result<String> {
 
 /// Load test kcl file to ast.Program
 fn load_test_program(filename: String) -> Program {
-    let module = kclvm_parser::parse_file(&filename, None).unwrap();
+    let module = kclvm_parser::parse_file_force_errors(&filename, None).unwrap();
     construct_program(module)
 }
 
@@ -151,22 +153,22 @@ fn parse_program(test_kcl_case_path: &str) -> Program {
         Arc::new(ParseSession::default()),
         &[test_kcl_case_path],
         Some(opts),
+        None,
     )
     .unwrap()
+    .program
 }
 
 /// Construct ast.Program by ast.Module and default configuration.
 /// Default configuration:
 ///     module.pkg = "__main__"
 ///     Program.root = "__main__"
-///     Program.main = "__main__"
 fn construct_program(mut module: Module) -> Program {
     module.pkg = MAIN_PKG_NAME.to_string();
     let mut pkgs_ast = HashMap::new();
     pkgs_ast.insert(MAIN_PKG_NAME.to_string(), vec![module]);
     Program {
         root: MAIN_PKG_NAME.to_string(),
-        main: MAIN_PKG_NAME.to_string(),
         pkgs: pkgs_ast,
     }
 }
@@ -207,7 +209,9 @@ fn execute_for_test(kcl_path: &String) -> String {
     // Parse kcl file
     let program = load_test_program(kcl_path.to_string());
     // Generate libs, link libs and execute.
-    execute(Arc::new(ParseSession::default()), program, &args).unwrap()
+    execute(Arc::new(ParseSession::default()), program, &args)
+        .unwrap()
+        .json_result
 }
 
 fn gen_assembler(entry_file: &str, test_kcl_case_path: &str) -> KclvmAssembler {
@@ -232,7 +236,7 @@ fn gen_libs_for_test(entry_file: &str, test_kcl_case_path: &str) {
         OBJECT_FILE_SUFFIX.to_string(),
     );
 
-    let lib_paths = assembler.gen_libs().unwrap();
+    let lib_paths = assembler.gen_libs(&ExecProgramArgs::default()).unwrap();
 
     assert_eq!(lib_paths.len(), expected_pkg_paths.len());
 
@@ -261,7 +265,9 @@ fn assemble_lib_for_test(
     let opts = args.get_load_program_options();
     let sess = Arc::new(ParseSession::default());
     // parse and resolve kcl
-    let mut program = load_program(sess, &files, Some(opts)).unwrap();
+    let mut program = load_program(sess, &files, Some(opts), None)
+        .unwrap()
+        .program;
 
     let scope = resolve_program(&mut program);
 
@@ -275,6 +281,7 @@ fn assemble_lib_for_test(
             scope.import_names,
             entry_file,
             temp_entry_file_path,
+            &ExecProgramArgs::default(),
         )
         .unwrap()
 }
@@ -479,9 +486,6 @@ fn test_from_setting_file_program_arg() {
 }
 
 fn test_exec_file() {
-    let prev_hook = std::panic::take_hook();
-    // disable print panic info
-    std::panic::set_hook(Box::new(|_| {}));
     let result = std::panic::catch_unwind(|| {
         for file in get_files(exec_data_path(), false, true, ".k") {
             exec(&file).unwrap();
@@ -489,7 +493,6 @@ fn test_exec_file() {
         }
     });
     assert!(result.is_ok());
-    std::panic::set_hook(prev_hook);
 }
 
 fn test_custom_manifests_output() {
@@ -538,6 +541,32 @@ fn test_exec() {
 
     test_exec_with_err_result();
     println!("test_exec_with_err_result - PASS");
+
+    test_indent_error();
+    println!("test_indent_error - PASS");
+
+    test_compile_with_file_pattern();
+    println!("test_compile_with_file_pattern - PASS");
+
+    test_uuid();
+    println!("test_uuid - PASS");
+}
+
+fn test_indent_error() {
+    let test_path = PathBuf::from("./src/test_indent_error");
+    let kcl_files = get_files(test_path.clone(), false, true, ".k");
+    let output_files = get_files(test_path, false, true, ".stderr");
+
+    for (kcl_file, err_file) in kcl_files.iter().zip(&output_files) {
+        let mut args = ExecProgramArgs::default();
+        args.k_filename_list.push(kcl_file.to_string());
+        let res = exec_program(Arc::new(ParseSession::default()), &args);
+        assert!(res.is_err());
+        if let Err(err_msg) = res {
+            let expect_err = fs::read_to_string(err_file).expect("Failed to read file");
+            assert!(err_msg.to_string().contains(&expect_err));
+        }
+    }
 }
 
 fn exec(file: &str) -> Result<String, String> {
@@ -546,9 +575,20 @@ fn exec(file: &str) -> Result<String, String> {
     let opts = args.get_load_program_options();
     let sess = Arc::new(ParseSession::default());
     // Load AST program
-    let program = load_program(sess.clone(), &[file], Some(opts)).unwrap();
+    let program = load_program(sess.clone(), &[file], Some(opts), None)
+        .unwrap()
+        .program;
     // Resolve ATS, generate libs, link libs and execute.
-    execute(sess, program, &args)
+    match execute(sess, program, &args) {
+        Ok(result) => {
+            if result.err_message.is_empty() {
+                Ok(result.json_result)
+            } else {
+                Err(result.err_message)
+            }
+        }
+        Err(err) => Err(err.to_string()),
+    }
 }
 
 /// Run all kcl files at path and compare the exec result with the expect output.
@@ -574,7 +614,11 @@ fn exec_with_result_at(path: &str) {
         #[cfg(target_os = "windows")]
         let expected = expected.replace("\r\n", "\n");
 
-        assert_eq!(result.yaml_result, expected);
+        assert_eq!(
+            result.yaml_result, expected,
+            "test case {} {} failed",
+            path, kcl_file
+        );
     }
 }
 
@@ -590,7 +634,12 @@ fn exec_with_err_result_at(path: &str) {
         for (kcl_file, _) in kcl_files.iter().zip(&output_files) {
             let mut args = ExecProgramArgs::default();
             args.k_filename_list.push(kcl_file.to_string());
-            assert!(exec_program(Arc::new(ParseSession::default()), &args).is_err());
+            let result = exec_program(Arc::new(ParseSession::default()), &args);
+            if let Ok(result) = result {
+                assert!(!result.err_message.is_empty(), "{}", result.err_message);
+            } else {
+                assert!(result.is_err());
+            }
         }
     });
     assert!(result.is_ok());
@@ -618,4 +667,39 @@ fn get_files<P: AsRef<Path>>(
         files.sort();
     }
     files
+}
+
+fn test_compile_with_file_pattern() {
+    let test_path = PathBuf::from("./src/test_file_pattern/**/main.k");
+    let mut args = ExecProgramArgs::default();
+    args.k_filename_list.push(test_path.display().to_string());
+    let res = exec_program(Arc::new(ParseSession::default()), &args);
+    assert!(res.is_ok());
+    assert_eq!(
+        res.as_ref().unwrap().yaml_result,
+        "k3: Hello World!\nk1: Hello World!\nk2: Hello World!"
+    );
+    assert_eq!(
+        res.as_ref().unwrap().json_result,
+        "{\"k3\": \"Hello World!\", \"k1\": \"Hello World!\", \"k2\": \"Hello World!\"}"
+    );
+}
+
+fn test_uuid() {
+    let res = exec(
+        &PathBuf::from(".")
+            .join("src")
+            .join("test_uuid")
+            .join("main.k")
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string(),
+    );
+
+    let v: Value = serde_json::from_str(res.clone().unwrap().as_str()).unwrap();
+    assert!(v["a"].as_str().is_some());
+    if let Some(uuid_str) = v["a"].as_str() {
+        assert!(Uuid::parse_str(uuid_str).is_ok());
+    }
 }

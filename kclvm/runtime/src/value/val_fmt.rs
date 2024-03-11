@@ -1,6 +1,6 @@
 //! Ref: https://github.com/RustPython/RustPython/blob/main/vm/src/format.rs
 //!
-//! Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 
 use itertools::{Itertools, PeekingNext};
 use std::cmp;
@@ -420,7 +420,6 @@ impl FormatSpec {
             .collect::<String>()
     }
 
-    #[allow(dead_code)]
     fn add_magnitude_separators_for_char(
         magnitude_string: String,
         interval: usize,
@@ -446,7 +445,6 @@ impl FormatSpec {
         result
     }
 
-    #[allow(dead_code)]
     fn get_separator_interval(&self) -> usize {
         match self.format_type {
             Some(FormatType::Binary) => 4,
@@ -461,7 +459,6 @@ impl FormatSpec {
         }
     }
 
-    #[allow(dead_code)]
     fn add_magnitude_separators(&self, magnitude_string: String) -> String {
         match self.grouping_option {
             Some(FormatGrouping::Comma) => FormatSpec::add_magnitude_separators_for_char(
@@ -601,15 +598,6 @@ impl FormatSpec {
         self.format_sign_and_align(&magnitude_string, sign_str)
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn format_string(&self, s: &str) -> Result<String, &'static str> {
-        match self.format_type {
-            Some(FormatType::String) | None => self.format_sign_and_align(s, ""),
-            _ => Err("Unknown format code for object of type 'str'"),
-        }
-    }
-
-    #[allow(dead_code)]
     fn format_sign_and_align(
         &self,
         magnitude_string: &str,
@@ -901,7 +889,7 @@ impl FormatString {
                         }
                         FieldType::Keyword(keyword) => kwargs
                             .dict_get_value(keyword.as_str())
-                            .expect("keyword argument not found")
+                            .unwrap_or_else(|| panic!("keyword argument '{keyword}' not found"))
                             .clone(),
                     };
                     for name_part in parts {
@@ -1061,6 +1049,7 @@ mod test_value_fmt {
 
     #[test]
     fn test_string_format() {
+        let mut ctx = Context::new();
         let cases = [
             (r#""{} {}""#, r#"["Hello","World"]"#, "\"Hello World\""),
             (r#""{:.0f}""#, r#"[1.0]"#, "\"1\""),
@@ -1073,7 +1062,7 @@ mod test_value_fmt {
         ];
         for (format_string, args, expected) in cases {
             let format_string = FormatString::from_str(format_string).unwrap();
-            let args = ValueRef::from_json(args).unwrap();
+            let args = ValueRef::from_json(&mut ctx, args).unwrap();
             let kwargs = ValueRef::dict(None);
             let result = format_string.format(&args, &kwargs);
             assert_eq!(&result, expected)

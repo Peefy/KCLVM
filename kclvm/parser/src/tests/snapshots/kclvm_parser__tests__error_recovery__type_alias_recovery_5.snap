@@ -1,12 +1,11 @@
 ---
 source: parser/src/tests/error_recovery.rs
-assertion_line: 172
 expression: "crate::tests::parsing_module_string(r#\"type pkg_path = \"#)"
 ---
 Module {
     filename: "",
     pkg: "",
-    doc: "",
+    doc: None,
     name: "",
     body: [
         Node {
@@ -15,7 +14,14 @@ Module {
                     type_name: Node {
                         node: Identifier {
                             names: [
-                                "pkg_path",
+                                Node {
+                                    node: "pkg_path",
+                                    filename: "",
+                                    line: 1,
+                                    column: 5,
+                                    end_line: 1,
+                                    end_column: 13,
+                                },
                             ],
                             pkgpath: "",
                             ctx: Load,
@@ -32,7 +38,7 @@ Module {
                         line: 1,
                         column: 16,
                         end_line: 1,
-                        end_column: 15,
+                        end_column: 16,
                     },
                     ty: Node {
                         node: Any,
@@ -40,7 +46,7 @@ Module {
                         line: 1,
                         column: 16,
                         end_line: 1,
-                        end_column: 15,
+                        end_column: 16,
                     },
                 },
             ),
@@ -48,7 +54,7 @@ Module {
             line: 1,
             column: 5,
             end_line: 1,
-            end_column: 15,
+            end_column: 16,
         },
     ],
     comments: [],

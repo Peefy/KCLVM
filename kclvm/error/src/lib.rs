@@ -12,12 +12,15 @@ use annotate_snippets::{
     snippet::{AnnotationType, Slice, Snippet, SourceAnnotation},
 };
 use anyhow::Result;
+use compiler_base_error::errors::ComponentFormatError;
+use compiler_base_error::StyledBuffer;
 use compiler_base_error::{
     components::{CodeSnippet, Label},
-    Diagnostic as DiagnosticTrait, DiagnosticStyle,
+    Component, Diagnostic as DiagnosticTrait, DiagnosticStyle,
 };
 use compiler_base_session::{Session, SessionDiagnostic};
 use compiler_base_span::{span::new_byte_pos, Span};
+use diagnostic::Range;
 use indexmap::IndexSet;
 use kclvm_runtime::PanicInfo;
 use std::{any::Any, sync::Arc};
@@ -91,14 +94,15 @@ impl Handler {
     }
 
     /// Construct a parse error and put it into the handler diagnostic buffer
-    pub fn add_syntex_error(&mut self, msg: &str, pos: Position) -> &mut Self {
+    pub fn add_syntex_error(&mut self, msg: &str, range: Range) -> &mut Self {
         let message = format!("Invalid syntax: {msg}");
         let diag = Diagnostic::new_with_code(
             Level::Error,
             &message,
             None,
-            pos,
+            range,
             Some(DiagnosticId::Error(E1001.kind)),
+            None,
         );
         self.add_diagnostic(diag);
 
@@ -106,13 +110,14 @@ impl Handler {
     }
 
     /// Construct a type error and put it into the handler diagnostic buffer
-    pub fn add_type_error(&mut self, msg: &str, pos: Position) -> &mut Self {
+    pub fn add_type_error(&mut self, msg: &str, range: Range) -> &mut Self {
         let diag = Diagnostic::new_with_code(
             Level::Error,
             msg,
             None,
-            pos,
+            range,
             Some(DiagnosticId::Error(E2G22.kind)),
+            None,
         );
         self.add_diagnostic(diag);
 
@@ -120,13 +125,23 @@ impl Handler {
     }
 
     /// Construct a type error and put it into the handler diagnostic buffer
-    pub fn add_compile_error(&mut self, msg: &str, pos: Position) -> &mut Self {
+    pub fn add_compile_error(&mut self, msg: &str, range: Range) -> &mut Self {
+        self.add_compile_error_with_suggestions(msg, range, None)
+    }
+
+    pub fn add_compile_error_with_suggestions(
+        &mut self,
+        msg: &str,
+        range: Range,
+        suggestions: Option<Vec<String>>,
+    ) -> &mut Self {
         let diag = Diagnostic::new_with_code(
             Level::Error,
             msg,
             None,
-            pos,
+            range,
             Some(DiagnosticId::Error(E2L23.kind)),
+            suggestions,
         );
         self.add_diagnostic(diag);
 
@@ -146,10 +161,11 @@ impl Handler {
     /// let mut handler = Handler::default();
     /// handler.add_error(ErrorKind::InvalidSyntax, &[
     ///     Message {
-    ///         pos: Position::dummy_pos(),
+    ///         range: (Position::dummy_pos(), Position::dummy_pos()),
     ///         style: Style::LineAndColumn,
     ///         message: "Invalid syntax: expected '+', got '-'".to_string(),
     ///         note: None,
+    ///         suggested_replacement: None,
     ///     }
     /// ]);
     /// ```
@@ -164,16 +180,35 @@ impl Handler {
         self
     }
 
+    pub fn add_suggestions(&mut self, msgs: Vec<String>) -> &mut Self {
+        msgs.iter().for_each(|s| {
+            self.add_diagnostic(Diagnostic {
+                level: Level::Suggestions,
+                messages: vec![Message {
+                    range: Range::default(),
+                    style: Style::Line,
+                    message: s.to_string(),
+                    note: None,
+                    suggested_replacement: None,
+                }],
+                code: Some(DiagnosticId::Suggestions),
+            });
+        });
+
+        self
+    }
+
     /// Add an warning into the handler
     /// ```
     /// use kclvm_error::*;
     /// let mut handler = Handler::default();
     /// handler.add_warning(WarningKind::UnusedImportWarning, &[
     ///     Message {
-    ///         pos: Position::dummy_pos(),
+    ///         range: (Position::dummy_pos(), Position::dummy_pos()),
     ///         style: Style::LineAndColumn,
     ///         message: "Module 'a' imported but unused.".to_string(),
     ///         note: None,
+    ///         suggested_replacement: None,
     ///     }],
     /// );
     /// ```
@@ -192,7 +227,7 @@ impl Handler {
     pub fn classification(&self) -> (IndexSet<Diagnostic>, IndexSet<Diagnostic>) {
         let (mut errs, mut warnings) = (IndexSet::new(), IndexSet::new());
         for diag in &self.diagnostics {
-            if diag.level == Level::Error {
+            if diag.level == Level::Error || diag.level == Level::Suggestions {
                 errs.insert(diag.clone());
             } else if diag.level == Level::Warning {
                 warnings.insert(diag.clone());
@@ -210,7 +245,7 @@ impl Handler {
     /// ```
     /// use kclvm_error::*;
     /// let mut handler = Handler::default();
-    /// handler.add_diagnostic(Diagnostic::new_with_code(Level::Error, "error message", None, Position::dummy_pos(), Some(DiagnosticId::Error(E1001.kind))));
+    /// handler.add_diagnostic(Diagnostic::new_with_code(Level::Error, "error message", None, (Position::dummy_pos(), Position::dummy_pos()), Some(DiagnosticId::Error(E1001.kind)), None));
     /// ```
     #[inline]
     pub fn add_diagnostic(&mut self, diagnostic: Diagnostic) -> &mut Self {
@@ -229,15 +264,17 @@ impl From<PanicInfo> for Diagnostic {
         };
 
         let mut diag = if panic_info.backtrace.is_empty() {
+            let pos = Position {
+                filename: panic_info.kcl_file.clone(),
+                line: panic_info.kcl_line as u64,
+                column: None,
+            };
             Diagnostic::new_with_code(
                 Level::Error,
-                &panic_msg,
+                panic_msg,
                 None,
-                Position {
-                    filename: panic_info.kcl_file.clone(),
-                    line: panic_info.kcl_line as u64,
-                    column: None,
-                },
+                (pos.clone(), pos),
+                None,
                 None,
             )
         } else {
@@ -252,17 +289,19 @@ impl From<PanicInfo> for Diagnostic {
                 if frame.col != 0 {
                     backtrace_msg.push_str(&format!(":{}", frame.col))
                 }
-                backtrace_msg.push_str("\n")
+                backtrace_msg.push('\n')
             }
+            let pos = Position {
+                filename: panic_info.kcl_file.clone(),
+                line: panic_info.kcl_line as u64,
+                column: None,
+            };
             Diagnostic::new_with_code(
                 Level::Error,
-                &panic_msg,
+                panic_msg,
                 Some(&backtrace_msg),
-                Position {
-                    filename: panic_info.kcl_file.clone(),
-                    line: panic_info.kcl_line as u64,
-                    column: None,
-                },
+                (pos.clone(), pos),
+                None,
                 None,
             )
         };
@@ -270,15 +309,17 @@ impl From<PanicInfo> for Diagnostic {
         if panic_info.kcl_config_meta_file.is_empty() {
             return diag;
         }
+        let pos = Position {
+            filename: panic_info.kcl_config_meta_file.clone(),
+            line: panic_info.kcl_config_meta_line as u64,
+            column: Some(panic_info.kcl_config_meta_col as u64),
+        };
         let mut config_meta_diag = Diagnostic::new_with_code(
             Level::Error,
             &panic_info.kcl_config_meta_arg_msg,
             None,
-            Position {
-                filename: panic_info.kcl_config_meta_file.clone(),
-                line: panic_info.kcl_config_meta_line as u64,
-                column: Some(panic_info.kcl_config_meta_col as u64),
-            },
+            (pos.clone(), pos),
+            None,
             None,
         );
         config_meta_diag.messages.append(&mut diag.messages);
@@ -329,12 +370,14 @@ impl ParseError {
             ParseError::Message { span, .. } => span,
         };
         let loc = sess.sm.lookup_char_pos(span.lo());
+        let pos: Position = loc.into();
         Ok(Diagnostic::new_with_code(
             Level::Error,
             &self.to_string(),
             None,
-            loc.into(),
+            (pos.clone(), pos),
             Some(DiagnosticId::Error(ErrorKind::InvalidSyntax)),
+            None,
         ))
     }
 }
@@ -372,6 +415,15 @@ impl SessionDiagnostic for ParseError {
     }
 }
 
+#[derive(Default)]
+pub struct SuggestionsLabel;
+
+impl Component<DiagnosticStyle> for SuggestionsLabel {
+    fn format(&self, sb: &mut StyledBuffer<DiagnosticStyle>, _: &mut Vec<ComponentFormatError>) {
+        sb.appendl("suggestion: ", Some(DiagnosticStyle::NeedAttention));
+    }
+}
+
 impl SessionDiagnostic for Diagnostic {
     fn into_diagnostic(self, _: &Session) -> Result<DiagnosticTrait<DiagnosticStyle>> {
         let mut diag = DiagnosticTrait::<DiagnosticStyle>::new();
@@ -385,6 +437,9 @@ impl SessionDiagnostic for Diagnostic {
                     diag.append_component(Box::new(Label::Warning(warning.code())));
                     diag.append_component(Box::new(format!(": {}\n", warning.name())));
                 }
+                DiagnosticId::Suggestions => {
+                    diag.append_component(Box::new(SuggestionsLabel));
+                }
             },
             None => match self.level {
                 Level::Error => {
@@ -396,30 +451,34 @@ impl SessionDiagnostic for Diagnostic {
                 Level::Note => {
                     diag.append_component(Box::new(Label::Note));
                 }
+                Level::Suggestions => {
+                    diag.append_component(Box::new(SuggestionsLabel));
+                }
             },
         }
         for msg in &self.messages {
-            match Session::new_with_file_and_code(&msg.pos.filename, None) {
+            match Session::new_with_file_and_code(&msg.range.0.filename, None) {
                 Ok(sess) => {
                     let source = sess.sm.lookup_source_file(new_byte_pos(0));
-                    let line = source.get_line((msg.pos.line - 1) as usize);
+                    let line = source.get_line((msg.range.0.line - 1) as usize);
                     match line.as_ref() {
                         Some(content) => {
+                            let length = content.chars().count();
                             let snippet = Snippet {
                                 title: None,
                                 footer: vec![],
                                 slices: vec![Slice {
                                     source: content,
-                                    line_start: msg.pos.line as usize,
-                                    origin: Some(&msg.pos.filename),
+                                    line_start: msg.range.0.line as usize,
+                                    origin: Some(&msg.range.0.filename),
                                     annotations: vec![SourceAnnotation {
-                                        range: match msg.pos.column {
-                                            Some(column) if content.len() >= 1 => {
+                                        range: match msg.range.0.column {
+                                            Some(column) if length >= 1 => {
                                                 let column = column as usize;
                                                 // If the position exceeds the length of the content,
                                                 // put the annotation at the end of the line.
-                                                if column >= content.len() {
-                                                    (content.len() - 1, content.len())
+                                                if column >= length {
+                                                    (length - 1, length)
                                                 } else {
                                                     (column, column + 1)
                                                 }

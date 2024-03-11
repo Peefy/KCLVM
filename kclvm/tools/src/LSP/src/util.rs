@@ -1,21 +1,38 @@
-use std::path::PathBuf;
-use std::{fs, sync::Arc};
-
 use indexmap::IndexSet;
-use kclvm_ast::ast::{ConfigEntry, Expr, Identifier, Node, NodeRef, Program, Stmt, Type};
+use kclvm_ast::ast::{
+    ConfigEntry, Expr, Identifier, Node, NodeRef, PosTuple, Program, SchemaExpr, SchemaStmt, Stmt,
+    Type,
+};
+use kclvm_ast::node_ref;
 use kclvm_ast::pos::ContainsPos;
-use kclvm_config::modfile::KCL_FILE_EXTENSION;
-use kclvm_driver::kpm_metadata::fetch_metadata;
+
+use kclvm_driver::kpm::fetch_metadata;
 use kclvm_driver::{get_kcl_files, lookup_compile_unit};
 use kclvm_error::Diagnostic;
 use kclvm_error::Position as KCLPos;
-use kclvm_parser::{load_program, ParseSession};
-use kclvm_sema::resolver::{resolve_program, scope::ProgramScope};
+use kclvm_parser::entry::get_dir_files;
+use kclvm_parser::{load_program, KCLModuleCache, ParseSession};
+use kclvm_sema::advanced_resolver::AdvancedResolver;
+use kclvm_sema::core::global_state::GlobalState;
+use kclvm_sema::namer::Namer;
+
+use kclvm_sema::resolver::resolve_program_with_opts;
+use kclvm_sema::resolver::scope::{CachedScope, ProgramScope};
+
+use kclvm_span::symbol::reserved;
 use kclvm_utils::pkgpath::rm_external_pkg_name;
-use lsp_types::Url;
+use lsp_types::{Location, Position, Range, Url};
 use parking_lot::{RwLock, RwLockReadGuard};
 use ra_ap_vfs::{FileId, Vfs};
 use serde::{de::DeserializeOwned, Serialize};
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use std::{
+    fs,
+    sync::{Arc, Mutex},
+};
 
 use crate::from_lsp;
 
@@ -51,13 +68,19 @@ pub fn get_file_name(vfs: RwLockReadGuard<Vfs>, file_id: FileId) -> anyhow::Resu
 
 pub(crate) struct Param {
     pub file: String,
+    pub module_cache: Option<KCLModuleCache>,
+    pub scope_cache: Option<Arc<Mutex<CachedScope>>>,
 }
 
 pub(crate) fn parse_param_and_compile(
     param: Param,
     vfs: Option<Arc<RwLock<Vfs>>>,
-) -> anyhow::Result<(Program, ProgramScope, IndexSet<Diagnostic>)> {
-    let (files, opt) = lookup_compile_unit(&param.file, true);
+) -> anyhow::Result<(Program, ProgramScope, IndexSet<Diagnostic>, GlobalState)> {
+    let (mut files, opt) = lookup_compile_unit(&param.file, true);
+    if !files.contains(&param.file) {
+        files.push(param.file.clone());
+    }
+
     let files: Vec<&str> = files.iter().map(|s| s.as_str()).collect();
     let mut opt = opt.unwrap_or_default();
     opt.load_plugins = true;
@@ -68,11 +91,26 @@ pub(crate) fn parse_param_and_compile(
         opt.k_code_list.append(&mut k_code_list);
     }
     let sess = Arc::new(ParseSession::default());
-    let mut program = load_program(sess.clone(), &files, Some(opt)).unwrap();
-    let prog_scope = resolve_program(&mut program);
+    let mut program = load_program(sess.clone(), &files, Some(opt), param.module_cache)?.program;
+
+    let prog_scope = resolve_program_with_opts(
+        &mut program,
+        kclvm_sema::resolver::Options {
+            merge_program: false,
+            type_erasure: false,
+            ..Default::default()
+        },
+        param.scope_cache,
+    );
+
+    let gs = GlobalState::default();
+    let gs = Namer::find_symbols(&program, gs);
+    let node_ty_map = prog_scope.node_ty_map.clone();
+    let global_state = AdvancedResolver::resolve_program(&program, gs, node_ty_map);
+
     sess.append_diagnostic(prog_scope.handler.diagnostics.clone());
     let diags = sess.1.borrow().diagnostics.clone();
-    Ok((program, prog_scope, diags))
+    Ok((program, prog_scope, diags, global_state))
 }
 
 /// Update text with TextDocumentContentChangeEvent param
@@ -107,10 +145,24 @@ fn load_files_code_from_vfs(files: &[&str], vfs: Arc<RwLock<Vfs>>) -> anyhow::Re
             }
             None => {
                 // In order to ensure that k_file corresponds to k_code, load the code from the file system if not exist
-                res.push(
-                    fs::read_to_string(path)
-                        .map_err(|_| anyhow::anyhow!("can't convert file to url: {}", file))?,
-                );
+                let p: &Path = path.as_ref();
+                if p.is_file() {
+                    res.push(
+                        fs::read_to_string(path)
+                            .map_err(|_| anyhow::anyhow!("can't convert file to url: {}", file))?,
+                    );
+                } else if p.is_dir() {
+                    let k_files = get_dir_files(p.to_str().unwrap(), false)
+                        .map_err(|_| anyhow::anyhow!("can't get dir files: {} ", file))?;
+                    for k_file in k_files {
+                        let k_file_path = Path::new(k_file.as_str());
+                        res.push(
+                            fs::read_to_string(k_file_path).map_err(|_| {
+                                anyhow::anyhow!("can't convert file to url: {}", file)
+                            })?,
+                        );
+                    }
+                }
             }
         }
     }
@@ -162,6 +214,19 @@ macro_rules! walk_list_if_contains {
     };
 }
 
+fn transfer_ident_names(names: Vec<String>, pos: &PosTuple) -> Vec<Node<String>> {
+    let mut new_names = vec![];
+    let mut col = pos.2;
+    for name in &names {
+        let mut name_pos = pos.clone();
+        name_pos.2 = col;
+        name_pos.4 = col + name.len() as u64;
+        new_names.push(Node::node_with_pos(name.clone(), name_pos));
+        col = col + name.len() as u64 + ".".len() as u64;
+    }
+    new_names
+}
+
 /// Recursively finds the inner most expr and its schema_def expr if in a schema expr(e.g., schema_attr and schema_expr)
 /// in a stmt according to the position.
 pub(crate) fn inner_most_expr_in_stmt(
@@ -171,25 +236,10 @@ pub(crate) fn inner_most_expr_in_stmt(
 ) -> (Option<Node<Expr>>, Option<Node<Expr>>) {
     match stmt {
         Stmt::Assign(assign_stmt) => {
-            if let Some(ty) = &assign_stmt.type_annotation {
-                // build a temp identifier with string
-                return (
-                    Some(Node::node_with_pos(
-                        Expr::Identifier(Identifier {
-                            names: vec![ty.node.clone()],
-                            pkgpath: "".to_string(),
-                            ctx: kclvm_ast::ast::ExprContext::Load,
-                        }),
-                        (
-                            ty.filename.clone(),
-                            ty.line,
-                            ty.column,
-                            ty.end_line,
-                            ty.end_column,
-                        ),
-                    )),
-                    schema_def,
-                );
+            if let Some(ty) = &assign_stmt.ty {
+                if ty.contains_pos(pos) {
+                    return (build_identifier_from_ty_string(ty, pos), schema_def);
+                }
             }
             walk_if_contains!(assign_stmt.value, pos, schema_def);
 
@@ -257,7 +307,16 @@ pub(crate) fn inner_most_expr_in_stmt(
             walk_if_contains!(
                 Node::node_with_pos(
                     Expr::Identifier(Identifier {
-                        names: vec![schema_stmt.name.node.clone()],
+                        names: transfer_ident_names(
+                            vec![schema_stmt.name.node.clone()],
+                            &(
+                                schema_stmt.name.filename.clone(),
+                                schema_stmt.name.line,
+                                schema_stmt.name.column,
+                                schema_stmt.name.end_line,
+                                schema_stmt.name.end_column,
+                            ),
+                        ),
                         pkgpath: "".to_string(),
                         ctx: kclvm_ast::ast::ExprContext::Load,
                     }),
@@ -295,6 +354,24 @@ pub(crate) fn inner_most_expr_in_stmt(
             (None, schema_def)
         }
         Stmt::SchemaAttr(schema_attr_expr) => {
+            walk_if_contains!(
+                Node::node_with_pos(
+                    Expr::Identifier(Identifier {
+                        names: vec![*schema_attr_expr.name.clone()],
+                        pkgpath: "".to_string(),
+                        ctx: kclvm_ast::ast::ExprContext::Load,
+                    }),
+                    (
+                        schema_attr_expr.name.filename.clone(),
+                        schema_attr_expr.name.line,
+                        schema_attr_expr.name.column,
+                        schema_attr_expr.name.end_line,
+                        schema_attr_expr.name.end_column,
+                    ),
+                ),
+                pos,
+                schema_def
+            );
             if schema_attr_expr.ty.contains_pos(pos) {
                 return (
                     build_identifier_from_ty_string(&schema_attr_expr.ty, pos),
@@ -336,7 +413,6 @@ pub(crate) fn inner_most_expr(
     match &expr.node {
         Expr::Identifier(_) => (Some(expr.clone()), schema_def),
         Expr::Selector(select_expr) => {
-            walk_if_contains_with_new_expr!(select_expr.attr, pos, schema_def, Expr::Identifier);
             walk_if_contains!(select_expr.value, pos, schema_def);
             (Some(expr.clone()), schema_def)
         }
@@ -417,7 +493,17 @@ pub(crate) fn inner_most_expr(
             walk_if_contains!(starred_exor.value, pos, schema_def);
             (Some(expr.clone()), schema_def)
         }
-        Expr::DictComp(_) => (Some(expr.clone()), schema_def),
+        Expr::DictComp(dict_comp) => {
+            walk_option_if_contains!(dict_comp.entry.key, pos, schema_def);
+            walk_if_contains!(dict_comp.entry.value, pos, schema_def);
+
+            for generator in &dict_comp.generators {
+                if generator.contains_pos(pos) {
+                    walk_if_contains_with_new_expr!(generator, pos, schema_def, Expr::CompClause);
+                }
+            }
+            (Some(expr.clone()), schema_def)
+        }
         Expr::ConfigIfEntry(config_if_entry_expr) => {
             walk_if_contains!(config_if_entry_expr.if_cond, pos, schema_def);
             for item in &config_if_entry_expr.items {
@@ -474,9 +560,15 @@ pub(crate) fn inner_most_expr(
             for default in &argument.defaults {
                 walk_option_if_contains!(default, pos, schema_def);
             }
-            for ty in argument.type_annotation_list.iter().flatten() {
+            for ty in argument.ty_list.iter().flatten() {
                 if ty.contains_pos(pos) {
-                    return (Some(build_identifier_from_string(ty)), schema_def);
+                    return (
+                        Some(build_identifier_from_string(&node_ref!(
+                            ty.node.to_string(),
+                            ty.pos()
+                        ))),
+                        schema_def,
+                    );
                 }
             }
             (Some(expr.clone()), schema_def)
@@ -514,7 +606,48 @@ fn inner_most_expr_in_config_entry(
     if config_entry.node.value.contains_pos(pos) {
         inner_most_expr(&config_entry.node.value, pos, None)
     } else {
-        (None, None)
+        (None, schema_def)
+    }
+}
+
+pub(crate) fn is_in_schema_expr(
+    program: &Program,
+    pos: &KCLPos,
+) -> Option<(Node<Stmt>, SchemaExpr)> {
+    match program.pos_to_stmt(pos) {
+        Some(node) => {
+            let parent_expr = inner_most_expr_in_stmt(&node.node, pos, None).1;
+            match parent_expr {
+                Some(expr) => match expr.node {
+                    Expr::Schema(schema) => Some((node, schema)),
+                    _ => None,
+                },
+                None => None,
+            }
+        }
+        None => None,
+    }
+}
+
+pub(crate) fn is_in_docstring(
+    program: &Program,
+    pos: &KCLPos,
+) -> Option<(NodeRef<String>, SchemaStmt)> {
+    match program.pos_to_stmt(pos) {
+        Some(node) => match node.node.clone() {
+            Stmt::Schema(schema) => match schema.doc {
+                Some(ref doc) => {
+                    if doc.contains_pos(pos) {
+                        Some((doc.clone(), schema))
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            },
+            _ => None,
+        },
+        None => None,
     }
 }
 
@@ -522,7 +655,16 @@ fn inner_most_expr_in_config_entry(
 fn build_identifier_from_string(s: &NodeRef<String>) -> Node<Expr> {
     Node::node_with_pos(
         Expr::Identifier(Identifier {
-            names: vec![s.node.clone()],
+            names: transfer_ident_names(
+                vec![s.node.clone()],
+                &(
+                    s.filename.clone(),
+                    s.line,
+                    s.column,
+                    s.end_line,
+                    s.end_column,
+                ),
+            ),
             pkgpath: "".to_string(),
             ctx: kclvm_ast::ast::ExprContext::Load,
         }),
@@ -584,43 +726,11 @@ fn build_identifier_from_ty_string(ty: &NodeRef<Type>, pos: &KCLPos) -> Option<N
             None
         }
         Type::Literal(_) => None,
+        Type::Function(_) => None,
     }
 }
 
-/// [`get_pos_from_real_path`] will return the start and the end position [`kclvm_error::Position`]
-/// in an [`IndexSet`] from the [`real_path`].
-pub(crate) fn get_pos_from_real_path(
-    real_path: &PathBuf,
-) -> IndexSet<(kclvm_error::Position, kclvm_error::Position)> {
-    let mut positions = IndexSet::new();
-    let mut k_file = real_path.clone();
-    k_file.set_extension(KCL_FILE_EXTENSION);
-
-    if k_file.is_file() {
-        let start = KCLPos {
-            filename: k_file.to_str().unwrap().to_string(),
-            line: 1,
-            column: None,
-        };
-        let end = start.clone();
-        positions.insert((start, end));
-    } else if real_path.is_dir() {
-        if let Ok(files) = get_kcl_files(real_path, false) {
-            positions.extend(files.iter().map(|file| {
-                let start = KCLPos {
-                    filename: file.clone(),
-                    line: 1,
-                    column: None,
-                };
-                let end = start.clone();
-                (start, end)
-            }))
-        }
-    }
-    positions
-}
-
-/// [`get_real_path_from_external`] will ask for the local path for [`pkg_name`] with subdir [`pkgpath`] from `kpm`.
+/// [`get_real_path_from_external`] will ask for the local path for [`pkg_name`] with subdir [`pkgpath`].
 /// If the external package, whose [`pkg_name`] is 'my_package', is stored in '\user\my_package_v0.0.1'.
 /// The [`pkgpath`] is 'my_package.examples.apps'.
 ///
@@ -650,4 +760,608 @@ pub(crate) fn get_real_path_from_external(
     };
     pkgpath.split('.').for_each(|s| real_path.push(s));
     real_path
+}
+
+#[allow(unused)]
+pub(crate) fn build_word_index_for_source_codes(
+    source_codes: HashMap<String, String>,
+    prune: bool,
+) -> anyhow::Result<HashMap<String, Vec<VirtualLocation>>> {
+    let mut index: HashMap<String, Vec<VirtualLocation>> = HashMap::new();
+    for (filepath, content) in source_codes.iter() {
+        for (key, values) in build_word_index_for_file_content_with_vfs(
+            content.to_string(),
+            filepath.to_string(),
+            prune,
+        ) {
+            index.entry(key).or_default().extend(values);
+        }
+    }
+    Ok(index)
+}
+
+pub(crate) fn build_word_index_for_file_paths(
+    paths: &[String],
+    prune: bool,
+) -> anyhow::Result<HashMap<String, Vec<Location>>> {
+    let mut index: HashMap<String, Vec<Location>> = HashMap::new();
+    for p in paths {
+        // str path to url
+        if let Ok(url) = Url::from_file_path(p) {
+            // read file content and save the word to word index
+            let text = read_file(p)?;
+            for (key, values) in build_word_index_for_file_content(text, &url, prune) {
+                index.entry(key).or_default().extend(values);
+            }
+        }
+    }
+    Ok(index)
+}
+
+/// scan and build a word -> Locations index map
+pub(crate) fn build_word_index(
+    path: String,
+    prune: bool,
+) -> anyhow::Result<HashMap<String, Vec<Location>>> {
+    let files = get_kcl_files(path.clone(), true)?;
+    build_word_index_for_file_paths(&files, prune)
+}
+
+#[allow(unused)]
+pub(crate) struct VirtualLocation {
+    pub(crate) filepath: String,
+    pub(crate) range: Range,
+}
+
+pub(crate) fn build_word_index_for_file_content_with_vfs(
+    content: String,
+    filepath: String,
+    prune: bool,
+) -> HashMap<String, Vec<VirtualLocation>> {
+    let mut index: HashMap<String, Vec<VirtualLocation>> = HashMap::new();
+    let lines: Vec<&str> = content.lines().collect();
+    let mut in_docstring = false;
+    for (li, line) in lines.into_iter().enumerate() {
+        if prune && !in_docstring && line.trim_start().starts_with("\"\"\"") {
+            in_docstring = true;
+            continue;
+        }
+        if prune && in_docstring {
+            if line.trim_end().ends_with("\"\"\"") {
+                in_docstring = false;
+            }
+            continue;
+        }
+        let words = line_to_words(line.to_string(), prune);
+        for (key, values) in words {
+            index
+                .entry(key)
+                .or_default()
+                .extend(values.iter().map(|w| VirtualLocation {
+                    filepath: filepath.clone(),
+                    range: Range {
+                        start: Position::new(li as u32, w.start_col),
+                        end: Position::new(li as u32, w.end_col),
+                    },
+                }));
+        }
+    }
+    index
+}
+
+pub(crate) fn build_word_index_for_file_content(
+    content: String,
+    url: &Url,
+    prune: bool,
+) -> HashMap<String, Vec<Location>> {
+    let mut index: HashMap<String, Vec<Location>> = HashMap::new();
+    let lines: Vec<&str> = content.lines().collect();
+    let mut in_docstring = false;
+    for (li, line) in lines.into_iter().enumerate() {
+        if prune && !in_docstring && line.trim_start().starts_with("\"\"\"") {
+            in_docstring = true;
+            continue;
+        }
+        if prune && in_docstring {
+            if line.trim_end().ends_with("\"\"\"") {
+                in_docstring = false;
+            }
+            continue;
+        }
+        let words = line_to_words(line.to_string(), prune);
+        for (key, values) in words {
+            index
+                .entry(key)
+                .or_default()
+                .extend(values.iter().map(|w| Location {
+                    uri: url.clone(),
+                    range: Range {
+                        start: Position::new(li as u32, w.start_col),
+                        end: Position::new(li as u32, w.end_col),
+                    },
+                }));
+        }
+    }
+    index
+}
+
+pub(crate) fn word_index_add(
+    from: &mut HashMap<String, Vec<Location>>,
+    add: HashMap<String, Vec<Location>>,
+) {
+    for (key, value) in add {
+        from.entry(key).or_default().extend(value);
+    }
+}
+
+pub(crate) fn word_index_subtract(
+    from: &mut HashMap<String, Vec<Location>>,
+    remove: HashMap<String, Vec<Location>>,
+) {
+    for (key, value) in remove {
+        for v in value {
+            from.entry(key.clone()).and_modify(|locations| {
+                locations.retain(|loc| loc != &v);
+            });
+        }
+    }
+}
+
+// Word describes an arbitrary word in a certain line including
+// start position, end position and the word itself.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Word {
+    start_col: u32,
+    end_col: u32,
+    word: String,
+}
+
+impl Word {
+    fn new(start_col: u32, end_col: u32, word: String) -> Self {
+        Self {
+            start_col,
+            end_col,
+            word,
+        }
+    }
+}
+
+pub fn read_file(path: &String) -> anyhow::Result<String> {
+    let text = std::fs::read_to_string(path)?;
+    Ok(text)
+}
+
+// Split one line into identifier words.
+fn line_to_words(text: String, prune: bool) -> HashMap<String, Vec<Word>> {
+    let mut result = HashMap::new();
+    let mut chars: Vec<char> = text.chars().collect();
+    chars.push('\n');
+    let mut start_pos = usize::MAX;
+    let mut continue_pos = usize::MAX - 1; // avoid overflow
+    let mut prev_word = false;
+    let mut words: Vec<Word> = vec![];
+    for (i, ch) in chars.iter().enumerate() {
+        if prune && *ch == '#' {
+            break;
+        }
+        let is_id_start = rustc_lexer::is_id_start(*ch);
+        let is_id_continue = rustc_lexer::is_id_continue(*ch);
+        // If the character is valid identifier start and the previous character is not valid identifier continue, mark the start position.
+        if is_id_start && !prev_word {
+            start_pos = i;
+        }
+        if is_id_continue {
+            // Continue searching for the end position.
+            if start_pos != usize::MAX {
+                continue_pos = i;
+            }
+        } else {
+            // Find out the end position.
+            if continue_pos + 1 == i {
+                let word = chars[start_pos..i].iter().collect::<String>().clone();
+                // skip word if it should be pruned
+                if !prune || !reserved::is_reserved_word(&word) {
+                    words.push(Word::new(start_pos as u32, i as u32, word));
+                }
+            }
+            // Reset the start position.
+            start_pos = usize::MAX;
+        }
+        prev_word = is_id_continue;
+    }
+
+    for w in words {
+        result.entry(w.word.clone()).or_insert(Vec::new()).push(w);
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_word_index, build_word_index_for_file_content, line_to_words, word_index_add,
+        word_index_subtract, Word,
+    };
+    use lsp_types::{Location, Position, Range, Url};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    #[test]
+    fn test_build_word_index() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut path = root.clone();
+        path.push("src/test_data/find_refs_test/main.k");
+
+        let url = lsp_types::Url::from_file_path(path.clone()).unwrap();
+        let path = path.to_str().unwrap();
+        let expect: HashMap<String, Vec<Location>> = vec![
+            (
+                "a".to_string(),
+                vec![
+                    Location {
+                        uri: url.clone(),
+                        range: Range {
+                            start: Position::new(0, 0),
+                            end: Position::new(0, 1),
+                        },
+                    },
+                    Location {
+                        uri: url.clone(),
+                        range: Range {
+                            start: Position::new(1, 4),
+                            end: Position::new(1, 5),
+                        },
+                    },
+                    Location {
+                        uri: url.clone(),
+                        range: Range {
+                            start: Position::new(2, 4),
+                            end: Position::new(2, 5),
+                        },
+                    },
+                    Location {
+                        uri: url.clone(),
+                        range: Range {
+                            start: Position::new(12, 14),
+                            end: Position::new(12, 15),
+                        },
+                    },
+                ],
+            ),
+            (
+                "c".to_string(),
+                vec![Location {
+                    uri: url.clone(),
+                    range: Range {
+                        start: Position::new(2, 0),
+                        end: Position::new(2, 1),
+                    },
+                }],
+            ),
+            (
+                "b".to_string(),
+                vec![Location {
+                    uri: url.clone(),
+                    range: Range {
+                        start: Position::new(1, 0),
+                        end: Position::new(1, 1),
+                    },
+                }],
+            ),
+            (
+                "n".to_string(),
+                vec![
+                    Location {
+                        uri: url.clone(),
+                        range: Range {
+                            start: Position::new(8, 4),
+                            end: Position::new(8, 5),
+                        },
+                    },
+                    Location {
+                        uri: url.clone(),
+                        range: Range {
+                            start: Position::new(11, 4),
+                            end: Position::new(11, 5),
+                        },
+                    },
+                ],
+            ),
+            (
+                "b".to_string(),
+                vec![Location {
+                    uri: url.clone(),
+                    range: Range {
+                        start: Position::new(1, 0),
+                        end: Position::new(1, 1),
+                    },
+                }],
+            ),
+            (
+                "Name".to_string(),
+                vec![
+                    Location {
+                        uri: url.clone(),
+                        range: Range {
+                            start: Position::new(4, 7),
+                            end: Position::new(4, 11),
+                        },
+                    },
+                    Location {
+                        uri: url.clone(),
+                        range: Range {
+                            start: Position::new(8, 7),
+                            end: Position::new(8, 11),
+                        },
+                    },
+                    Location {
+                        uri: url.clone(),
+                        range: Range {
+                            start: Position::new(11, 7),
+                            end: Position::new(11, 11),
+                        },
+                    },
+                ],
+            ),
+            (
+                "name".to_string(),
+                vec![
+                    Location {
+                        uri: url.clone(),
+                        range: Range {
+                            start: Position::new(5, 4),
+                            end: Position::new(5, 8),
+                        },
+                    },
+                    Location {
+                        uri: url.clone(),
+                        range: Range {
+                            start: Position::new(12, 8),
+                            end: Position::new(12, 12),
+                        },
+                    },
+                ],
+            ),
+            (
+                "demo".to_string(),
+                vec![Location {
+                    uri: url.clone(),
+                    range: Range {
+                        start: Position::new(0, 5),
+                        end: Position::new(0, 9),
+                    },
+                }],
+            ),
+            (
+                "Person".to_string(),
+                vec![
+                    Location {
+                        uri: url.clone(),
+                        range: Range {
+                            start: Position::new(7, 7),
+                            end: Position::new(7, 13),
+                        },
+                    },
+                    Location {
+                        uri: url.clone(),
+                        range: Range {
+                            start: Position::new(10, 5),
+                            end: Position::new(10, 11),
+                        },
+                    },
+                ],
+            ),
+            (
+                "p2".to_string(),
+                vec![Location {
+                    uri: url.clone(),
+                    range: Range {
+                        start: Position::new(10, 0),
+                        end: Position::new(10, 2),
+                    },
+                }],
+            ),
+        ]
+        .into_iter()
+        .collect();
+        match build_word_index(path.to_string(), true) {
+            Ok(actual) => {
+                assert_eq!(expect, actual)
+            }
+            Err(_) => assert!(false, "build word index failed. expect: {:?}", expect),
+        }
+    }
+
+    #[test]
+    fn test_word_index_add() {
+        let loc1 = Location {
+            uri: Url::parse("file:///path/to/file.k").unwrap(),
+            range: Range {
+                start: Position::new(0, 0),
+                end: Position::new(0, 4),
+            },
+        };
+        let loc2 = Location {
+            uri: Url::parse("file:///path/to/file.k").unwrap(),
+            range: Range {
+                start: Position::new(1, 0),
+                end: Position::new(1, 4),
+            },
+        };
+        let mut from = HashMap::from([("name".to_string(), vec![loc1.clone()])]);
+        let add = HashMap::from([("name".to_string(), vec![loc2.clone()])]);
+        word_index_add(&mut from, add);
+        assert_eq!(
+            from,
+            HashMap::from([("name".to_string(), vec![loc1.clone(), loc2.clone()],)])
+        );
+    }
+
+    #[test]
+    fn test_word_index_subtract() {
+        let loc1 = Location {
+            uri: Url::parse("file:///path/to/file.k").unwrap(),
+            range: Range {
+                start: Position::new(0, 0),
+                end: Position::new(0, 4),
+            },
+        };
+        let loc2 = Location {
+            uri: Url::parse("file:///path/to/file.k").unwrap(),
+            range: Range {
+                start: Position::new(1, 0),
+                end: Position::new(1, 4),
+            },
+        };
+        let mut from = HashMap::from([("name".to_string(), vec![loc1.clone(), loc2.clone()])]);
+        let remove = HashMap::from([("name".to_string(), vec![loc2.clone()])]);
+        word_index_subtract(&mut from, remove);
+        assert_eq!(
+            from,
+            HashMap::from([("name".to_string(), vec![loc1.clone()],)])
+        );
+    }
+
+    #[test]
+    fn test_line_to_words() {
+        let lines = [
+            "schema Person:",
+            "name. name again",
+            "some_word word !word",
+            "# this line is a single-line comment",
+            "name # end of line comment",
+        ];
+
+        let expects: Vec<HashMap<String, Vec<Word>>> = vec![
+            vec![(
+                "Person".to_string(),
+                vec![Word {
+                    start_col: 7,
+                    end_col: 13,
+                    word: "Person".to_string(),
+                }],
+            )]
+            .into_iter()
+            .collect(),
+            vec![
+                (
+                    "name".to_string(),
+                    vec![
+                        Word {
+                            start_col: 0,
+                            end_col: 4,
+                            word: "name".to_string(),
+                        },
+                        Word {
+                            start_col: 6,
+                            end_col: 10,
+                            word: "name".to_string(),
+                        },
+                    ],
+                ),
+                (
+                    "again".to_string(),
+                    vec![Word {
+                        start_col: 11,
+                        end_col: 16,
+                        word: "again".to_string(),
+                    }],
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            vec![
+                (
+                    "some_word".to_string(),
+                    vec![Word {
+                        start_col: 0,
+                        end_col: 9,
+                        word: "some_word".to_string(),
+                    }],
+                ),
+                (
+                    "word".to_string(),
+                    vec![
+                        Word {
+                            start_col: 10,
+                            end_col: 14,
+                            word: "word".to_string(),
+                        },
+                        Word {
+                            start_col: 16,
+                            end_col: 20,
+                            word: "word".to_string(),
+                        },
+                    ],
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            HashMap::new(),
+            vec![(
+                "name".to_string(),
+                vec![Word {
+                    start_col: 0,
+                    end_col: 4,
+                    word: "name".to_string(),
+                }],
+            )]
+            .into_iter()
+            .collect(),
+        ];
+        for i in 0..lines.len() {
+            let got = line_to_words(lines[i].to_string(), true);
+            assert_eq!(expects[i], got)
+        }
+    }
+
+    #[test]
+    fn test_build_word_index_for_file_content() {
+        let content = r#"schema Person:
+    """
+    This is a docstring.
+    Person is a schema which defines a person's name and age.
+    """
+    name: str # name must not be empty
+    # age is a positive integer
+    age: int
+"#;
+        let mock_url = Url::parse("file:///path/to/file.k").unwrap();
+        let expects: HashMap<String, Vec<Location>> = vec![
+            (
+                "Person".to_string(),
+                vec![Location {
+                    uri: mock_url.clone(),
+                    range: Range {
+                        start: Position::new(0, 7),
+                        end: Position::new(0, 13),
+                    },
+                }],
+            ),
+            (
+                "name".to_string(),
+                vec![Location {
+                    uri: mock_url.clone(),
+                    range: Range {
+                        start: Position::new(5, 4),
+                        end: Position::new(5, 8),
+                    },
+                }],
+            ),
+            (
+                "age".to_string(),
+                vec![Location {
+                    uri: mock_url.clone(),
+                    range: Range {
+                        start: Position::new(7, 4),
+                        end: Position::new(7, 7),
+                    },
+                }],
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let got = build_word_index_for_file_content(content.to_string(), &mock_url.clone(), true);
+        assert_eq!(expects, got)
+    }
 }

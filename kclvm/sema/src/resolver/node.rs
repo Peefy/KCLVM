@@ -3,19 +3,18 @@ use kclvm_ast::ast;
 use kclvm_ast::pos::GetPos;
 use kclvm_ast::walker::MutSelfTypedResultWalker;
 use kclvm_error::*;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::info::is_private_field;
 use crate::ty::{
-    sup, DecoratorTarget, Parameter, Type, TypeInferMethods, TypeKind, RESERVED_TYPE_IDENTIFIERS,
+    sup, DictType, FunctionType, Parameter, Type, TypeInferMethods, TypeKind, TypeRef,
+    RESERVED_TYPE_IDENTIFIERS,
 };
 
 use super::format::VALID_FORMAT_SPEC_SET;
 use super::scope::{ScopeKind, ScopeObject, ScopeObjectKind};
 use super::ty::ty_str_replace_pkgpath;
 use super::Resolver;
-
-pub type TypeRef = Rc<Type>;
 /// ResolvedResult denotes the result, when the result is error,
 /// put the message string into the diagnostic vector.
 pub type ResolvedResult = TypeRef;
@@ -34,7 +33,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
             if expr_types.len() > 1 {
                 self.handler.add_compile_error(
                     "expression statement can only have one expression",
-                    expr_stmt.exprs[1].get_pos(),
+                    expr_stmt.exprs[1].get_span_pos(),
                 );
             }
             ty
@@ -51,30 +50,33 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
         if names.len() > 1 {
             self.handler.add_compile_error(
                 "unification identifier can not be selected",
-                unification_stmt.target.get_pos(),
+                unification_stmt.target.get_span_pos(),
             );
         }
         let (start, end) = unification_stmt.value.get_span_pos();
         if names.is_empty() {
-            self.handler
-                .add_compile_error("missing target in the unification statement", start);
+            self.handler.add_compile_error(
+                "missing target in the unification statement",
+                unification_stmt.value.get_span_pos(),
+            );
             return self.any_ty();
         }
         self.ctx.l_value = true;
         let expected_ty = self.walk_identifier_expr(&unification_stmt.target);
         self.ctx.l_value = false;
-        let obj = self.new_config_expr_context_item(&names[0], expected_ty.clone(), start, end);
+        let obj =
+            self.new_config_expr_context_item(&names[0].node, expected_ty.clone(), start, end);
         let init_stack_depth = self.switch_config_expr_context(Some(obj));
         let ty = self.walk_schema_expr(&unification_stmt.value.node);
         self.clear_config_expr_context(init_stack_depth as usize, false);
         self.must_assignable_to(
             ty.clone(),
             expected_ty.clone(),
-            unification_stmt.target.get_pos(),
+            unification_stmt.target.get_span_pos(),
             None,
         );
         if !ty.is_any() && expected_ty.is_any() {
-            self.set_type_to_scope(&names[0], ty, unification_stmt.target.get_pos());
+            self.set_type_to_scope(&names[0].node, ty, &names[0]);
         }
         expected_ty
     }
@@ -82,14 +84,14 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
     fn walk_type_alias_stmt(&mut self, type_alias_stmt: &'ctx ast::TypeAliasStmt) -> Self::Result {
         let (start, end) = type_alias_stmt.type_name.get_span_pos();
         let mut ty = self
-            .parse_ty_with_scope(&type_alias_stmt.ty.node, start.clone())
+            .parse_ty_with_scope(Some(&type_alias_stmt.ty), (start.clone(), end.clone()))
             .as_ref()
             .clone();
         if let TypeKind::Schema(schema_ty) = &mut ty.kind {
             schema_ty.is_instance = false;
         }
         ty.is_type_alias = true;
-        let ty = Rc::new(ty);
+        let ty = Arc::new(ty);
         let ty_str = ty.into_type_annotation_str();
         let name = type_alias_stmt.type_name.node.get_name();
         let mut mapping = IndexMap::default();
@@ -102,7 +104,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                     "type alias '{}' cannot be the same as the built-in types ({:?})",
                     name, RESERVED_TYPE_IDENTIFIERS
                 ),
-                start.clone(),
+                type_alias_stmt.type_name.get_span_pos(),
             );
         }
         self.insert_object(
@@ -113,9 +115,12 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                 end,
                 ty: ty.clone(),
                 kind: ScopeObjectKind::TypeAlias,
-                used: false,
                 doc: None,
             },
+        );
+        self.node_ty_map.insert(
+            self.get_node_key(type_alias_stmt.type_name.id.clone()),
+            ty.clone(),
         );
         ty
     }
@@ -132,41 +137,55 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
             if target.node.names.is_empty() {
                 continue;
             }
-            let name = &target.node.names[0];
+            let name = &target.node.names[0].node;
             // Add global names.
             if (is_private_field(name) || is_config || !self.contains_global_name(name))
                 && self.scope_level == 0
             {
-                self.insert_global_name(name, &target.get_pos());
+                self.insert_global_name(name, &target.get_span_pos());
             }
             if target.node.names.len() == 1 {
                 self.ctx.l_value = true;
                 let expected_ty = self.walk_identifier_expr(target);
                 self.ctx.l_value = false;
-                if let TypeKind::Schema(ty) = &expected_ty.kind {
-                    let obj = self.new_config_expr_context_item(
-                        &ty.name,
-                        expected_ty.clone(),
-                        start.clone(),
-                        end.clone(),
-                    );
-                    let init_stack_depth = self.switch_config_expr_context(Some(obj));
-                    value_ty = self.expr(&assign_stmt.value);
-                    self.clear_config_expr_context(init_stack_depth as usize, false)
-                } else {
-                    value_ty = self.expr(&assign_stmt.value);
+                match &expected_ty.kind {
+                    TypeKind::Schema(ty) => {
+                        let obj = self.new_config_expr_context_item(
+                            &ty.name,
+                            expected_ty.clone(),
+                            start.clone(),
+                            end.clone(),
+                        );
+                        let init_stack_depth = self.switch_config_expr_context(Some(obj));
+                        value_ty = self.expr(&assign_stmt.value);
+                        self.clear_config_expr_context(init_stack_depth as usize, false)
+                    }
+                    TypeKind::List(_) | TypeKind::Dict(_) | TypeKind::Union(_) => {
+                        let obj = self.new_config_expr_context_item(
+                            "[]",
+                            expected_ty.clone(),
+                            start.clone(),
+                            end.clone(),
+                        );
+                        let init_stack_depth = self.switch_config_expr_context(Some(obj));
+                        value_ty = self.expr(&assign_stmt.value);
+                        self.check_assignment_type_annotation(assign_stmt, value_ty.clone());
+                        self.clear_config_expr_context(init_stack_depth as usize, false)
+                    }
+                    _ => {
+                        value_ty = self.expr(&assign_stmt.value);
+                        // Check type annotation if exists.
+                        self.check_assignment_type_annotation(assign_stmt, value_ty.clone());
+                    }
                 }
                 self.must_assignable_to(
                     value_ty.clone(),
                     expected_ty.clone(),
-                    target.get_pos(),
+                    target.get_span_pos(),
                     None,
                 );
-                if !value_ty.is_any()
-                    && expected_ty.is_any()
-                    && assign_stmt.type_annotation.is_none()
-                {
-                    self.set_type_to_scope(name, value_ty.clone(), target.get_pos());
+                if !value_ty.is_any() && expected_ty.is_any() && assign_stmt.ty.is_none() {
+                    self.set_type_to_scope(name, value_ty.clone(), &target.node.names[0]);
                     if let Some(schema_ty) = &self.ctx.schema {
                         let mut schema_ty = schema_ty.borrow_mut();
                         schema_ty.set_type_of_attr(
@@ -176,12 +195,14 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                     }
                 }
             } else {
-                self.lookup_type_from_scope(name, target.get_pos());
+                self.lookup_type_from_scope(name, target.get_span_pos());
                 self.ctx.l_value = true;
                 let expected_ty = self.walk_identifier_expr(target);
                 self.ctx.l_value = false;
                 value_ty = self.expr(&assign_stmt.value);
-                self.must_assignable_to(value_ty.clone(), expected_ty, target.get_pos(), None)
+                // Check type annotation if exists.
+                self.check_assignment_type_annotation(assign_stmt, value_ty.clone());
+                self.must_assignable_to(value_ty.clone(), expected_ty, target.get_span_pos(), None)
             }
         }
         value_ty
@@ -191,28 +212,30 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
         self.ctx.l_value = false;
         if !aug_assign_stmt.target.node.names.is_empty() {
             let is_config = matches!(aug_assign_stmt.value.node, ast::Expr::Schema(_));
-            let name = &aug_assign_stmt.target.node.names[0];
+            let name = &aug_assign_stmt.target.node.names[0].node;
             // Add global names.
             if is_private_field(name) || is_config || !self.contains_global_name(name) {
                 if self.scope_level == 0 {
-                    self.insert_global_name(name, &aug_assign_stmt.target.get_pos());
+                    self.insert_global_name(name, &aug_assign_stmt.target.get_span_pos());
                 }
             } else {
                 let mut msgs = vec![Message {
-                    pos: aug_assign_stmt.target.get_pos(),
+                    range: aug_assign_stmt.target.get_span_pos(),
                     style: Style::LineAndColumn,
                     message: format!("Immutable variable '{}' is modified during compiling", name),
                     note: None,
+                    suggested_replacement: None,
                 }];
                 if let Some(pos) = self.get_global_name_pos(name) {
                     msgs.push(Message {
-                        pos: pos.clone(),
+                        range: pos.clone(),
                         style: Style::LineAndColumn,
                         message: format!("The variable '{}' is declared here firstly", name),
                         note: Some(format!(
                             "change the variable name to '_{}' to make it mutable",
                             name
                         )),
+                        suggested_replacement: None,
                     })
                 }
                 self.handler.add_error(ErrorKind::ImmutableError, &msgs);
@@ -224,13 +247,18 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
             Ok(op) => op,
             Err(msg) => bug!("{}", msg),
         };
-        let new_target_ty = self.binary(left_ty, right_ty, &op, aug_assign_stmt.target.get_pos());
+        let new_target_ty = self.binary(
+            left_ty,
+            right_ty,
+            &op,
+            aug_assign_stmt.target.get_span_pos(),
+        );
         self.ctx.l_value = true;
         let expected_ty = self.walk_identifier_expr(&aug_assign_stmt.target);
         self.must_assignable_to(
             new_target_ty.clone(),
             expected_ty,
-            aug_assign_stmt.target.get_pos(),
+            aug_assign_stmt.target.get_span_pos(),
             None,
         );
         self.ctx.l_value = false;
@@ -268,69 +296,64 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
 
     fn walk_quant_expr(&mut self, quant_expr: &'ctx ast::QuantExpr) -> Self::Result {
         let iter_ty = self.expr(&quant_expr.target);
-        if iter_ty.is_any() {
-            iter_ty
-        } else {
-            let (start, end) = (self.ctx.start_pos.clone(), self.ctx.end_pos.clone());
-            self.enter_scope(start, end, ScopeKind::Loop);
-            let (mut key_name, mut val_name) = (None, None);
-            let mut target_node = None;
-            for (i, target) in quant_expr.variables.iter().enumerate() {
-                if target.node.names.is_empty() {
-                    continue;
-                }
-                if target.node.names.len() > 1 {
-                    self.handler.add_compile_error(
-                        "loop variables can only be ordinary identifiers",
-                        target.get_pos(),
-                    );
-                }
-                target_node = Some(target);
-                let name = &target.node.names[0];
-                if i == 0 {
-                    key_name = Some(name.to_string());
-                } else if i == 1 {
-                    val_name = Some(name.to_string())
-                } else {
-                    self.handler.add_compile_error(
-                        &format!(
-                            "the number of loop variables is {}, which can only be 1 or 2",
-                            quant_expr.variables.len()
-                        ),
-                        target.get_pos(),
-                    );
-                    break;
-                }
-                self.ctx.local_vars.push(name.to_string());
-                let (start, end) = target.get_span_pos();
-                self.insert_object(
-                    name,
-                    ScopeObject {
-                        name: name.to_string(),
-                        start,
-                        end,
-                        ty: self.any_ty(),
-                        kind: ScopeObjectKind::Variable,
-                        used: false,
-                        doc: None,
-                    },
+        let (start, mut end) = quant_expr.test.get_span_pos();
+        if let Some(if_cond) = &quant_expr.if_cond {
+            end = if_cond.get_end_pos();
+        }
+        self.enter_scope(start, end, ScopeKind::Loop);
+        let (mut key_name, mut val_name) = (None, None);
+        for (i, target) in quant_expr.variables.iter().enumerate() {
+            if target.node.names.is_empty() {
+                continue;
+            }
+            if target.node.names.len() > 1 {
+                self.handler.add_compile_error(
+                    "loop variables can only be ordinary identifiers",
+                    target.get_span_pos(),
                 );
             }
-            self.do_loop_type_check(
-                target_node.unwrap(),
-                key_name,
-                val_name,
-                iter_ty.clone(),
-                quant_expr.target.get_pos(),
-            );
-            self.expr_or_any_type(&quant_expr.if_cond);
-            let item_ty = self.expr(&quant_expr.test);
-            self.leave_scope();
-            match &quant_expr.op {
-                ast::QuantOperation::All | ast::QuantOperation::Any => self.bool_ty(),
-                ast::QuantOperation::Filter => iter_ty,
-                ast::QuantOperation::Map => Rc::new(Type::list(item_ty)),
+            let name = &target.node.names[0];
+            if i == 0 {
+                key_name = Some(name);
+            } else if i == 1 {
+                val_name = Some(name)
+            } else {
+                self.handler.add_compile_error(
+                    &format!(
+                        "the number of loop variables is {}, which can only be 1 or 2",
+                        quant_expr.variables.len()
+                    ),
+                    target.get_span_pos(),
+                );
+                break;
             }
+            self.ctx.local_vars.push(name.node.to_string());
+            let (start, end) = target.get_span_pos();
+            self.insert_object(
+                &name.node,
+                ScopeObject {
+                    name: name.node.to_string(),
+                    start,
+                    end,
+                    ty: self.any_ty(),
+                    kind: ScopeObjectKind::Variable,
+                    doc: None,
+                },
+            );
+        }
+        self.do_loop_type_check(
+            key_name,
+            val_name,
+            iter_ty.clone(),
+            quant_expr.target.get_span_pos(),
+        );
+        self.expr_or_any_type(&quant_expr.if_cond);
+        let item_ty = self.expr(&quant_expr.test);
+        self.leave_scope();
+        match &quant_expr.op {
+            ast::QuantOperation::All | ast::QuantOperation::Any => self.bool_ty(),
+            ast::QuantOperation::Filter => iter_ty,
+            ast::QuantOperation::Map => Arc::new(Type::list(item_ty)),
         }
     }
 
@@ -338,8 +361,10 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
         self.ctx.local_vars.clear();
         let (start, end) = schema_attr.name.get_span_pos();
         let name = if schema_attr.name.node.contains('.') {
-            self.handler
-                .add_compile_error("schema attribute can not be selected", start.clone());
+            self.handler.add_compile_error(
+                "schema attribute can not be selected",
+                schema_attr.name.get_span_pos(),
+            );
             schema_attr.name.node.split('.').collect::<Vec<&str>>()[0]
         } else {
             &schema_attr.name.node
@@ -350,6 +375,11 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
             .get_type_of_attr(name)
             .map_or(self.any_ty(), |ty| ty);
 
+        self.node_ty_map.insert(
+            self.get_node_key(schema_attr.name.id.clone()),
+            expected_ty.clone(),
+        );
+
         let doc_str = schema
             .borrow()
             .attrs
@@ -357,8 +387,6 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
             .map(|attr| attr.doc.clone())
             .flatten();
 
-        // Schema attribute decorators
-        self.resolve_decorators(&schema_attr.decorators, DecoratorTarget::Attribute, name);
         self.insert_object(
             name,
             ScopeObject {
@@ -367,7 +395,6 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                 end,
                 ty: expected_ty.clone(),
                 kind: ScopeObjectKind::Attribute,
-                used: false,
                 doc: doc_str,
             },
         );
@@ -383,17 +410,31 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
             } else {
                 self.expr(value)
             };
-            let pos = schema_attr.name.get_pos();
             match &schema_attr.op {
                 Some(bin_or_aug) => match bin_or_aug {
                     // Union
-                    ast::BinOrAugOp::Aug(ast::AugOp::BitOr) => {
+                    ast::AugOp::BitOr => {
                         let op = ast::BinOp::BitOr;
-                        let value_ty = self.binary(value_ty, expected_ty.clone(), &op, pos.clone());
-                        self.must_assignable_to(value_ty, expected_ty, pos, None);
+                        let value_ty = self.binary(
+                            value_ty,
+                            expected_ty.clone(),
+                            &op,
+                            schema_attr.name.get_span_pos(),
+                        );
+                        self.must_assignable_to(
+                            value_ty,
+                            expected_ty,
+                            schema_attr.name.get_span_pos(),
+                            None,
+                        );
                     }
                     // Assign
-                    _ => self.must_assignable_to(value_ty, expected_ty, pos, None),
+                    _ => self.must_assignable_to(
+                        value_ty,
+                        expected_ty,
+                        schema_attr.name.get_span_pos(),
+                        None,
+                    ),
                 },
                 None => bug!("invalid ast schema attr op kind"),
             }
@@ -411,47 +452,58 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
 
     fn walk_unary_expr(&mut self, unary_expr: &'ctx ast::UnaryExpr) -> Self::Result {
         let operand_ty = self.expr(&unary_expr.operand);
-        self.unary(operand_ty, &unary_expr.op, unary_expr.operand.get_pos())
+        self.unary(
+            operand_ty,
+            &unary_expr.op,
+            unary_expr.operand.get_span_pos(),
+        )
     }
 
     fn walk_binary_expr(&mut self, binary_expr: &'ctx ast::BinaryExpr) -> Self::Result {
         let left_ty = self.expr(&binary_expr.left);
         let mut right_ty = self.expr(&binary_expr.right);
-        let pos = binary_expr.left.get_pos();
         match &binary_expr.op {
-            ast::BinOrCmpOp::Bin(bin_op) => match bin_op {
-                ast::BinOp::As => {
-                    if let ast::Expr::Identifier(identifier) = &binary_expr.right.node {
-                        right_ty = self.parse_ty_str_with_scope(
-                            &identifier.get_name(),
-                            binary_expr.right.get_pos(),
-                        );
-                        if right_ty.is_schema() {
-                            let mut schema_ty = right_ty.into_schema_type();
-                            schema_ty.is_instance = true;
-                            right_ty = Rc::new(Type::schema(schema_ty));
-                        }
-                        let ty_annotation_str = right_ty.into_type_annotation_str();
-                        self.add_type_alias(
-                            &identifier.get_name(),
-                            &ty_str_replace_pkgpath(&ty_annotation_str, &self.ctx.pkgpath),
-                        );
-                    } else {
-                        self.handler
-                            .add_compile_error("keyword 'as' right operand must be a type", pos);
-                        return left_ty;
+            ast::BinOp::As => {
+                if let ast::Expr::Identifier(identifier) = &binary_expr.right.node {
+                    right_ty = self.parse_ty_str_with_scope(
+                        &identifier.get_name(),
+                        binary_expr.right.get_span_pos(),
+                    );
+                    if right_ty.is_schema() {
+                        let mut schema_ty = right_ty.into_schema_type();
+                        schema_ty.is_instance = true;
+                        right_ty = Arc::new(Type::schema(schema_ty));
                     }
-                    self.binary(left_ty, right_ty, bin_op, pos)
+                    let ty_annotation_str = right_ty.into_type_annotation_str();
+                    self.add_type_alias(
+                        &identifier.get_name(),
+                        &ty_str_replace_pkgpath(&ty_annotation_str, &self.ctx.pkgpath),
+                    );
+                } else {
+                    self.handler.add_compile_error(
+                        "keyword 'as' right operand must be a type",
+                        binary_expr.left.get_span_pos(),
+                    );
+                    return left_ty;
                 }
-                _ => self.binary(left_ty, right_ty, bin_op, pos),
-            },
-            ast::BinOrCmpOp::Cmp(cmp_op) => self.compare(left_ty, right_ty, cmp_op, pos),
+                self.binary(
+                    left_ty,
+                    right_ty,
+                    &binary_expr.op,
+                    binary_expr.left.get_span_pos(),
+                )
+            }
+            _ => self.binary(
+                left_ty,
+                right_ty,
+                &binary_expr.op,
+                binary_expr.left.get_span_pos(),
+            ),
         }
     }
 
     fn walk_selector_expr(&mut self, selector_expr: &'ctx ast::SelectorExpr) -> Self::Result {
         let mut value_ty = self.expr(&selector_expr.value);
-        let pos = selector_expr.attr.get_pos();
         if value_ty.is_module() && selector_expr.has_question {
             let attr = selector_expr.attr.node.get_name();
             self.handler.add_compile_error(
@@ -460,56 +512,77 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                     attr,
                     attr
                 ),
-                selector_expr.value.get_pos(),
+                selector_expr.value.get_span_pos(),
             );
         }
         for name in &selector_expr.attr.node.names {
-            value_ty = self.load_attr(value_ty.clone(), name, pos.clone());
+            value_ty = self.load_attr(
+                value_ty.clone(),
+                &name.node,
+                selector_expr.attr.get_span_pos(),
+            );
+            self.node_ty_map
+                .insert(self.get_node_key(name.id.clone()), value_ty.clone());
         }
+
+        if let TypeKind::Function(func) = &value_ty.kind {
+            self.insert_object(
+                &selector_expr.attr.node.get_name(),
+                ScopeObject {
+                    name: selector_expr.attr.node.get_name(),
+                    start: selector_expr.attr.get_pos(),
+                    end: selector_expr.attr.get_end_pos(),
+                    ty: value_ty.clone(),
+                    kind: ScopeObjectKind::FunctionCall,
+                    doc: Some(func.doc.clone()),
+                },
+            )
+        }
+
         value_ty
     }
 
     fn walk_call_expr(&mut self, call_expr: &'ctx ast::CallExpr) -> Self::Result {
         let call_ty = self.expr(&call_expr.func);
-        let pos = call_expr.func.get_pos();
+        let range = call_expr.func.get_span_pos();
         if call_ty.is_any() {
             self.do_arguments_type_check(
-                &call_expr.func.node,
+                &call_expr.func,
                 &call_expr.args,
                 &call_expr.keywords,
-                &[],
+                &FunctionType::variadic_func(),
             );
             self.any_ty()
         } else if let TypeKind::Function(func_ty) = &call_ty.kind {
             self.do_arguments_type_check(
-                &call_expr.func.node,
+                &call_expr.func,
                 &call_expr.args,
                 &call_expr.keywords,
-                &func_ty.params,
+                &func_ty,
             );
             func_ty.return_ty.clone()
         } else if let TypeKind::Schema(schema_ty) = &call_ty.kind {
             if schema_ty.is_instance {
                 self.handler.add_compile_error(
                     &format!("schema '{}' instance is not callable", call_ty.ty_str()),
-                    pos,
+                    range,
                 );
                 self.any_ty()
             } else {
                 self.do_arguments_type_check(
-                    &call_expr.func.node,
+                    &call_expr.func,
                     &call_expr.args,
                     &call_expr.keywords,
-                    &schema_ty.func.params,
+                    &schema_ty.func,
                 );
                 let mut return_ty = schema_ty.clone();
                 return_ty.is_instance = true;
-                Rc::new(Type::schema(return_ty))
+                Arc::new(Type::schema(return_ty))
             }
         } else {
             self.handler.add_compile_error(
                 &format!("'{}' object is not callable", call_ty.ty_str()),
-                pos,
+                range,
             );
             self.any_ty()
         }
@@ -517,7 +590,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
 
     fn walk_subscript(&mut self, subscript: &'ctx ast::Subscript) -> Self::Result {
         let value_ty = self.expr(&subscript.value);
-        let pos = subscript.value.get_pos();
+        let range = subscript.value.get_span_pos();
         if value_ty.is_any() {
             value_ty
         } else {
@@ -545,7 +618,9 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                         }
                     }
                 }
-                TypeKind::Dict(_, val_ty) => {
+                TypeKind::Dict(DictType {
+                    key_ty: _, val_ty, ..
+                }) => {
                     if let Some(index) = &subscript.index {
                         let index_key_ty = self.expr(index);
                         if index_key_ty.is_none_or_any() {
@@ -556,17 +631,17 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                                     "invalid dict/schema key type: '{}'",
                                     index_key_ty.ty_str()
                                 ),
-                                pos,
+                                range,
                             );
                             self.any_ty()
-                        } else if let ast::Expr::StringLit(string_lit) = &subscript.value.node {
-                            self.load_attr(value_ty, &string_lit.value, pos)
+                        } else if let TypeKind::StrLit(lit_value) = &index_key_ty.kind {
+                            self.load_attr(value_ty, lit_value, range)
                         } else {
                             val_ty.clone()
                         }
                     } else {
                         self.handler
-                            .add_compile_error("unhashable type: 'slice'", pos);
+                            .add_compile_error("unhashable type: 'slice'", range);
                         self.any_ty()
                     }
                 }
@@ -581,24 +656,24 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                                     "invalid dict/schema key type: '{}'",
                                     index_key_ty.ty_str()
                                 ),
-                                pos,
+                                range,
                             );
                             self.any_ty()
-                        } else if let ast::Expr::StringLit(string_lit) = &subscript.value.node {
-                            self.load_attr(value_ty, &string_lit.value, pos)
+                        } else if let TypeKind::StrLit(lit_value) = &index_key_ty.kind {
+                            self.load_attr(value_ty, lit_value, range)
                         } else {
                             schema_ty.val_ty()
                         }
                     } else {
                         self.handler
-                            .add_compile_error("unhashable type: 'slice'", pos);
+                            .add_compile_error("unhashable type: 'slice'", range);
                         self.any_ty()
                     }
                 }
                 _ => {
                     self.handler.add_compile_error(
                         &format!("'{}' object is not subscriptable", value_ty.ty_str()),
-                        subscript.value.get_pos(),
+                        subscript.value.get_span_pos(),
                     );
                     self.any_ty()
                 }
@@ -611,12 +686,15 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
     }
 
     fn walk_list_expr(&mut self, list_expr: &'ctx ast::ListExpr) -> Self::Result {
+        let stack_depth = self.switch_list_expr_context();
         let item_type = sup(&self.exprs(&list_expr.elts).to_vec());
+        self.clear_config_expr_context(stack_depth, false);
         Type::list_ref(item_type)
     }
 
     fn walk_list_comp(&mut self, list_comp: &'ctx ast::ListComp) -> Self::Result {
         let start = list_comp.elt.get_pos();
+        let stack_depth = self.switch_list_expr_context();
         let end = match list_comp.generators.last() {
             Some(last) => last.get_end_pos(),
             None => list_comp.elt.get_end_pos(),
@@ -626,11 +704,14 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
             self.walk_comp_clause(&comp_clause.node);
         }
         if let ast::Expr::Starred(_) = list_comp.elt.node {
-            self.handler
-                .add_compile_error("list unpacking cannot be used in list comprehension", start);
+            self.handler.add_compile_error(
+                "list unpacking cannot be used in list comprehension",
+                list_comp.elt.get_span_pos(),
+            );
         }
         let item_ty = self.expr(&list_comp.elt);
         self.leave_scope();
+        self.clear_config_expr_context(stack_depth, false);
         Type::list_ref(item_ty)
     }
 
@@ -647,8 +728,10 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
         }
         let key_ty = self.expr(key);
         // TODO: Naming both dict keys and schema attributes as `attribute`
-        self.check_attr_ty(&key_ty, start);
+        self.check_attr_ty(&key_ty, key.get_span_pos());
+        let stack_depth = self.switch_config_expr_context_by_key(&dict_comp.entry.key);
         let val_ty = self.expr(&dict_comp.entry.value);
+        self.clear_config_expr_context(stack_depth, false);
         self.leave_scope();
         Type::dict_ref(key_ty, val_ty)
     }
@@ -673,7 +756,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
             match &ty.kind {
                 TypeKind::None | TypeKind::Any => (ty.clone(), true),
                 TypeKind::List(item_ty) => (item_ty.clone(), true),
-                TypeKind::Dict(key_ty, _) => (key_ty.clone(), true),
+                TypeKind::Dict(DictType { key_ty, .. }) => (key_ty.clone(), true),
                 TypeKind::Schema(schema_ty) => (schema_ty.key_ty(), true),
                 TypeKind::Union(types) => {
                     let results = types
@@ -689,7 +772,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                         results.iter().all(|(_, r)| *r),
                     )
                 }
-                _ => (Rc::new(Type::ANY), false),
+                _ => (Arc::new(Type::ANY), false),
             }
         }
         let (ty, result) = starred_ty_walk_fn(&value_ty);
@@ -699,7 +782,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                     "only list, dict, schema object can be used * unpacked, got {}",
                     ty.ty_str()
                 ),
-                starred_expr.value.get_pos(),
+                starred_expr.value.get_span_pos(),
             );
         }
         ty
@@ -722,7 +805,6 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
     fn walk_comp_clause(&mut self, comp_clause: &'ctx ast::CompClause) -> Self::Result {
         let iter_ty = self.expr(&comp_clause.iter);
         let (mut key_name, mut val_name) = (None, None);
-        let mut target_node = None;
         for (i, target) in comp_clause.targets.iter().enumerate() {
             if target.node.names.is_empty() {
                 continue;
@@ -730,36 +812,34 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
             if target.node.names.len() > 1 {
                 self.handler.add_compile_error(
                     "loop variables can only be ordinary identifiers",
-                    target.get_pos(),
+                    target.get_span_pos(),
                 );
             }
-            target_node = Some(target);
             let name = &target.node.names[0];
             if i == 0 {
-                key_name = Some(name.to_string());
+                key_name = Some(name);
             } else if i == 1 {
-                val_name = Some(name.to_string())
+                val_name = Some(name);
             } else {
                 self.handler.add_compile_error(
                     &format!(
                         "the number of loop variables is {}, which can only be 1 or 2",
                         comp_clause.targets.len()
                     ),
-                    target.get_pos(),
+                    target.get_span_pos(),
                 );
                 break;
             }
-            self.ctx.local_vars.push(name.to_string());
+            self.ctx.local_vars.push(name.node.to_string());
             let (start, end) = target.get_span_pos();
             self.insert_object(
-                name,
+                &name.node,
                 ScopeObject {
-                    name: name.to_string(),
+                    name: name.node.to_string(),
                     start,
                     end,
                     ty: self.any_ty(),
                     kind: ScopeObjectKind::Variable,
-                    used: false,
                     doc: None,
                 },
             );
@@ -767,13 +847,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
         if iter_ty.is_any() {
             iter_ty
         } else {
-            self.do_loop_type_check(
-                target_node.unwrap(),
-                key_name,
-                val_name,
-                iter_ty,
-                comp_clause.iter.get_pos(),
-            );
+            self.do_loop_type_check(key_name, val_name, iter_ty, comp_clause.iter.get_span_pos());
             self.exprs(&comp_clause.ifs);
             self.any_ty()
         }
@@ -784,12 +858,12 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
         if !matches!(&schema_expr.config.node, ast::Expr::Config(_)) {
             self.handler.add_compile_error(
                 "Invalid schema config expr, expect config entries, e.g., {k1 = v1, k2 = v2}",
-                schema_expr.config.get_pos(),
+                schema_expr.config.get_span_pos(),
             );
         }
-        let mut pos = schema_expr.name.get_pos();
+        let mut range = schema_expr.name.get_span_pos();
         let ret_ty = match &def_ty.kind {
-            TypeKind::Dict(_, _) => {
+            TypeKind::Dict(DictType { .. }) => {
                 let obj = self.new_config_expr_context_item(
                     "",
                     def_ty.clone(),
@@ -799,7 +873,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                 let init_stack_depth = self.switch_config_expr_context(Some(obj));
                 let config_ty = self.expr(&schema_expr.config);
                 self.clear_config_expr_context(init_stack_depth as usize, false);
-                self.binary(def_ty.clone(), config_ty, &ast::BinOp::BitOr, pos)
+                self.binary(def_ty.clone(), config_ty, &ast::BinOp::BitOr, range)
             }
             TypeKind::Schema(schema_ty) => {
                 if !schema_ty.is_instance {
@@ -818,30 +892,39 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                 );
                 let init_stack_depth = self.switch_config_expr_context(Some(obj));
                 self.expr(&schema_expr.config);
+                self.node_ty_map.insert(
+                    self.get_node_key(schema_expr.config.id.clone()),
+                    def_ty.clone(),
+                );
                 self.clear_config_expr_context(init_stack_depth as usize, false);
                 if schema_ty.is_instance {
                     if !schema_expr.args.is_empty() || !schema_expr.kwargs.is_empty() {
                         self.handler.add_compile_error(
                             "Arguments cannot be used in the schema modification expression",
-                            pos,
+                            range,
                         );
                     }
                 } else {
-                    let func = ast::Expr::Identifier(schema_expr.name.node.clone());
-
+                    let func = Box::new(ast::Node::node_with_pos(
+                        ast::Expr::Identifier(schema_expr.name.node.clone()),
+                        schema_expr.name.pos(),
+                    ));
                     self.do_arguments_type_check(
                         &func,
                         &schema_expr.args,
                         &schema_expr.kwargs,
-                        &schema_ty.func.params,
+                        &schema_ty.func,
                     );
                 }
                 self.any_ty()
             }
             _ => {
-                pos.filename = self.ctx.filename.clone();
-                self.handler
-                    .add_compile_error(&format!("Invalid schema type '{}'", def_ty.ty_str()), pos);
+                range.0.filename = self.ctx.filename.clone();
+                range.1.filename = self.ctx.filename.clone();
+                self.handler.add_compile_error(
+                    &format!("Invalid schema type '{}'", def_ty.ty_str()),
+                    range,
+                );
                 return self.any_ty();
             }
         };
@@ -850,7 +933,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
             schema_ty.is_instance = true;
         }
         if def_ty_clone.is_schema() {
-            Rc::new(def_ty_clone)
+            Arc::new(def_ty_clone)
         } else {
             ret_ty
         }
@@ -876,20 +959,40 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
         if let Some(args) = &lambda_expr.args {
             for (i, arg) in args.node.args.iter().enumerate() {
                 let name = arg.node.get_name();
-                let arg_ty = args.node.get_arg_type(i);
-                let ty = self.parse_ty_with_scope(&arg_ty, arg.get_pos());
+                let arg_ty = args.node.get_arg_type_node(i);
+                let range = match arg_ty {
+                    Some(arg_type_node) => arg_type_node.get_span_pos(),
+                    None => arg.get_span_pos(),
+                };
+                let ty = self.parse_ty_with_scope(arg_ty, range);
+
+                // If the arguments type of a lambda is a schema type,
+                // It should be marked as an schema instance type.
+                let ty = if let TypeKind::Schema(sty) = &ty.kind {
+                    let mut arg_ty = sty.clone();
+                    arg_ty.is_instance = true;
+                    Arc::new(Type::schema(arg_ty))
+                } else {
+                    ty.clone()
+                };
+                if let Some(name) = arg.node.names.last() {
+                    self.node_ty_map
+                        .insert(self.get_node_key(name.id.clone()), ty.clone());
+                }
+
+                let value = &args.node.defaults[i];
                 params.push(Parameter {
                     name,
                     ty: ty.clone(),
-                    has_default: false,
+                    has_default: value.is_some(),
                 });
-                let value = &args.node.defaults[i];
                 self.expr_or_any_type(value);
             }
         }
         let (start, end) = (self.ctx.start_pos.clone(), self.ctx.end_pos.clone());
         if let Some(ret_annotation_ty) = &lambda_expr.return_ty {
-            ret_ty = self.parse_ty_with_scope(&ret_annotation_ty.node, start.clone());
+            ret_ty =
+                self.parse_ty_with_scope(Some(&ret_annotation_ty), (start.clone(), end.clone()));
         }
         self.enter_scope(start.clone(), end.clone(), ScopeKind::Lambda);
         self.ctx.in_lambda_expr.push(true);
@@ -903,7 +1006,6 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                     end: end.clone(),
                     ty: param.ty.clone(),
                     kind: ScopeObjectKind::Parameter,
-                    used: false,
                     doc: None,
                 },
             )
@@ -911,22 +1013,25 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
         if let Some(stmt) = lambda_expr.body.last() {
             if !matches!(
                 stmt.node,
-                ast::Stmt::Expr(_) | ast::Stmt::Assign(_) | ast::Stmt::AugAssign(_)
+                ast::Stmt::Expr(_)
+                    | ast::Stmt::Assign(_)
+                    | ast::Stmt::AugAssign(_)
+                    | ast::Stmt::Assert(_)
             ) {
                 self.handler.add_compile_error(
                     "The last statement of the lambda body must be a expression e.g., x, 1, etc.",
-                    stmt.get_pos(),
+                    stmt.get_span_pos(),
                 );
             }
         }
         let real_ret_ty = self.stmts(&lambda_expr.body);
         self.leave_scope();
         self.ctx.in_lambda_expr.pop();
-        self.must_assignable_to(real_ret_ty.clone(), ret_ty.clone(), end, None);
-        if !real_ret_ty.is_any() && ret_ty.is_any() && lambda_expr.return_type_str.is_none() {
+        self.must_assignable_to(real_ret_ty.clone(), ret_ty.clone(), (start, end), None);
+        if !real_ret_ty.is_any() && ret_ty.is_any() && lambda_expr.return_ty.is_none() {
             ret_ty = real_ret_ty;
         }
-        Rc::new(Type::function(None, ret_ty, &params, "", false, None))
+        Arc::new(Type::function(None, ret_ty, &params, "", false, None))
     }
 
     fn walk_keyword(&mut self, keyword: &'ctx ast::Keyword) -> Self::Result {
@@ -936,8 +1041,12 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
 
     fn walk_arguments(&mut self, arguments: &'ctx ast::Arguments) -> Self::Result {
         for (i, arg) in arguments.args.iter().enumerate() {
-            let ty = arguments.get_arg_type(i);
-            self.parse_ty_with_scope(&ty, arg.get_pos());
+            let ty = arguments.get_arg_type_node(i);
+            let ty = self.parse_ty_with_scope(ty, arg.get_span_pos());
+            if let Some(name) = arg.node.names.last() {
+                self.node_ty_map
+                    .insert(self.get_node_key(name.id.clone()), ty.clone());
+            }
             let value = &arguments.defaults[i];
             self.expr_or_any_type(value);
         }
@@ -951,21 +1060,32 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
             t1.clone(),
             t2.clone(),
             &compare.ops[0],
-            compare.comparators[0].get_pos(),
+            compare.comparators[0].get_span_pos(),
         );
         for i in 1..compare.comparators.len() - 1 {
             let op = &compare.ops[i + 1];
-            self.compare(t1.clone(), t2.clone(), op, compare.comparators[i].get_pos());
+            let t2 = self.expr(&compare.comparators[i]);
+            self.compare(
+                t1.clone(),
+                t2.clone(),
+                op,
+                compare.comparators[i].get_span_pos(),
+            );
         }
         self.bool_ty()
     }
 
     fn walk_identifier(&mut self, identifier: &'ctx ast::Identifier) -> Self::Result {
-        self.resolve_var(
-            &identifier.names,
+        let tys = self.resolve_var(
+            &identifier.get_names(),
             &identifier.pkgpath,
-            self.ctx.start_pos.clone(),
-        )
+            (self.ctx.start_pos.clone(), self.ctx.end_pos.clone()),
+        );
+        for (index, name) in identifier.names.iter().enumerate() {
+            self.node_ty_map
+                .insert(self.get_node_key(name.id.clone()), tys[index].clone());
+        }
+        tys.last().unwrap().clone()
     }
 
     fn walk_number_lit(&mut self, number_lit: &'ctx ast::NumberLit) -> Self::Result {
@@ -976,28 +1096,28 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
                     ast::NumberLitValue::Float(float_val) => {
                         self.handler.add_compile_error(
                             "float literal can not be followed the unit suffix",
-                            self.ctx.start_pos.clone(),
+                            (self.ctx.start_pos.clone(), self.ctx.end_pos.clone()),
                         );
                         float_val as i64
                     }
                 };
                 let binary_suffix_str: String = binary_suffix.value();
                 let value = kclvm_runtime::units::cal_num(raw_value, &binary_suffix_str);
-                Rc::new(Type::number_multiplier(
+                Arc::new(Type::number_multiplier(
                     value,
                     raw_value,
                     &binary_suffix_str,
                 ))
             }
             None => match number_lit.value {
-                ast::NumberLitValue::Int(int_val) => Rc::new(Type::int_lit(int_val)),
-                ast::NumberLitValue::Float(float_val) => Rc::new(Type::float_lit(float_val)),
+                ast::NumberLitValue::Int(int_val) => Arc::new(Type::int_lit(int_val)),
+                ast::NumberLitValue::Float(float_val) => Arc::new(Type::float_lit(float_val)),
             },
         }
     }
 
     fn walk_string_lit(&mut self, string_lit: &'ctx ast::StringLit) -> Self::Result {
-        Rc::new(Type::str_lit(&string_lit.value))
+        Arc::new(Type::str_lit(&string_lit.value))
     }
 
     fn walk_name_constant_lit(
@@ -1005,8 +1125,8 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
         name_constant_lit: &'ctx ast::NameConstantLit,
     ) -> Self::Result {
         match &name_constant_lit.value {
-            ast::NameConstant::True => Rc::new(Type::bool_lit(true)),
-            ast::NameConstant::False => Rc::new(Type::bool_lit(false)),
+            ast::NameConstant::True => Arc::new(Type::bool_lit(true)),
+            ast::NameConstant::False => Arc::new(Type::bool_lit(false)),
             ast::NameConstant::None | ast::NameConstant::Undefined => self.none_ty(),
         }
     }
@@ -1023,7 +1143,7 @@ impl<'ctx> MutSelfTypedResultWalker<'ctx> for Resolver<'ctx> {
             if !VALID_FORMAT_SPEC_SET.contains(&spec_lower.as_str()) {
                 self.handler.add_compile_error(
                     &format!("{} is a invalid format spec", spec),
-                    formatted_value.value.get_pos(),
+                    formatted_value.value.get_span_pos(),
                 );
             }
         }
@@ -1063,7 +1183,10 @@ impl<'ctx> Resolver<'ctx> {
             self.ctx.start_pos = start;
             self.ctx.end_pos = end;
         }
-        self.walk_expr(&expr.node)
+        let ty = self.walk_expr(&expr.node);
+        self.node_ty_map
+            .insert(self.get_node_key(expr.id.clone()), ty.clone());
+        ty
     }
 
     #[inline]
@@ -1071,7 +1194,10 @@ impl<'ctx> Resolver<'ctx> {
         let (start, end) = stmt.get_span_pos();
         self.ctx.start_pos = start;
         self.ctx.end_pos = end;
-        self.walk_stmt(&stmt.node)
+        let ty = self.walk_stmt(&stmt.node);
+        self.node_ty_map
+            .insert(self.get_node_key(stmt.id.clone()), ty.clone());
+        ty
     }
 
     #[inline]
@@ -1080,7 +1206,12 @@ impl<'ctx> Resolver<'ctx> {
         expr: &'ctx Option<ast::NodeRef<ast::Expr>>,
     ) -> ResolvedResult {
         match expr {
-            Some(expr) => self.walk_expr(&expr.node),
+            Some(expr) => {
+                let ty = self.walk_expr(&expr.node);
+                self.node_ty_map
+                    .insert(self.get_node_key(expr.id.clone()), ty.clone());
+                ty
+            }
             None => self.any_ty(),
         }
     }
@@ -1090,10 +1221,19 @@ impl<'ctx> Resolver<'ctx> {
         &mut self,
         identifier: &'ctx ast::NodeRef<ast::Identifier>,
     ) -> ResolvedResult {
-        self.resolve_var(
-            &identifier.node.names,
+        let tys = self.resolve_var(
+            &identifier.node.get_names(),
             &identifier.node.pkgpath,
-            identifier.get_pos(),
-        )
+            identifier.get_span_pos(),
+        );
+        for (index, name) in identifier.node.names.iter().enumerate() {
+            self.node_ty_map
+                .insert(self.get_node_key(name.id.clone()), tys[index].clone());
+        }
+        let ident_ty = tys.last().unwrap().clone();
+        self.node_ty_map
+            .insert(self.get_node_key(identifier.id.clone()), ident_ty.clone());
+
+        ident_ty
     }
 }

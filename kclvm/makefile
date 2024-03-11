@@ -31,7 +31,7 @@ install-kclvm-py:
 # E2E compile and run
 run:
 	cd .. && make build && cd kclvm
-	kcl ../samples/hello.k
+	kclvm_cli run ../samples/hello.k
 
 # Cargo check all packages
 check:
@@ -55,7 +55,7 @@ fix:
 
 # Unit tests without code cov
 test:
-	cargo test -p kclvm-* -- --nocapture
+	cargo test --workspace -r -- --nocapture
 
 # Unit tests with code cov (Requires rust 1.60+)
 codecov:
@@ -67,20 +67,21 @@ codecov:
 codecov-lcov:
 	rustup component add llvm-tools-preview
 	cargo install cargo-llvm-cov
-	mkdir $(PWD)/.kclvm
-	cargo llvm-cov --lcov --output-path $(PWD)/.kclvm/lcov.info --workspace --ignore-filename-regex gpyrpc.rs -- --nocapture
+	rm -rf $(PWD)/.kclvm_cov
+	mkdir $(PWD)/.kclvm_cov
+	cargo llvm-cov --lcov --output-path $(PWD)/.kclvm_cov/lcov.info -r --workspace --ignore-filename-regex gpyrpc.rs -- --nocapture
 
 # Test runtime libaries using python functions
 test-runtime: install-kclvm-py install-pytest
-	cd ./tests/test_units && PYTHONPATH=./../../plugin kclvm -m pytest -vv || { echo 'kclvm/tests/test_units failed' ; exit 1; }
+	cd ./tests/test_units && PYTHONPATH=./../../tests/test_units/runtime python3 -m pytest -vv || { echo 'kclvm/tests/test_units failed' ; exit 1; }
 
 # E2E grammar tests.
 test-grammar: install-kclvm-py install-pytest
-	cd tests/integration/grammar && kclvm -m pytest -v -n 5
+	cd tests/integration/grammar && python3 -m pytest -v -n 5
 
 # E2E konfig tests.
 test-konfig: install-kclvm-py install-pytest
-	cd tests/integration/konfig && kclvm -m pytest -v -n 5
+	cd tests/integration/konfig && python3 -m pytest -v -n 5
 
 # Parser fuzz.
 fuzz-parser:

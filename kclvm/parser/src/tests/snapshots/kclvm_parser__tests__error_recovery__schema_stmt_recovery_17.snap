@@ -1,18 +1,18 @@
 ---
 source: parser/src/tests/error_recovery.rs
-assertion_line: 208
+assertion_line: 234
 expression: "crate::tests::parsing_module_string(r#\"schema A:\na: \"#)"
 ---
 Module {
     filename: "",
     pkg: "",
-    doc: "",
+    doc: None,
     name: "",
     body: [
         Node {
             node: Schema(
                 SchemaStmt {
-                    doc: "",
+                    doc: None,
                     name: Node {
                         node: "A",
                         filename: "",
@@ -38,6 +38,60 @@ Module {
             column: 0,
             end_line: 2,
             end_column: 0,
+        },
+        Node {
+            node: Assign(
+                AssignStmt {
+                    targets: [
+                        Node {
+                            node: Identifier {
+                                names: [
+                                    Node {
+                                        node: "a",
+                                        filename: "",
+                                        line: 2,
+                                        column: 0,
+                                        end_line: 2,
+                                        end_column: 1,
+                                    },
+                                ],
+                                pkgpath: "",
+                                ctx: Store,
+                            },
+                            filename: "",
+                            line: 2,
+                            column: 0,
+                            end_line: 2,
+                            end_column: 1,
+                        },
+                    ],
+                    value: Node {
+                        node: Missing(
+                            MissingExpr,
+                        ),
+                        filename: "",
+                        line: 2,
+                        column: 3,
+                        end_line: 2,
+                        end_column: 3,
+                    },
+                    ty: Some(
+                        Node {
+                            node: Any,
+                            filename: "",
+                            line: 2,
+                            column: 3,
+                            end_line: 2,
+                            end_column: 3,
+                        },
+                    ),
+                },
+            ),
+            filename: "",
+            line: 2,
+            column: 0,
+            end_line: 2,
+            end_column: 1,
         },
     ],
     comments: [],

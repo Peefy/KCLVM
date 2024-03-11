@@ -1,12 +1,12 @@
 ---
 source: parser/src/tests/error_recovery.rs
-assertion_line: 178
+assertion_line: 203
 expression: "crate::tests::parsing_module_string(r#\"if True: else: b = 2\"#)"
 ---
 Module {
     filename: "",
     pkg: "",
-    doc: "",
+    doc: None,
     name: "",
     body: [
         Node {
@@ -20,7 +20,14 @@ Module {
                                         Node {
                                             node: Identifier {
                                                 names: [
-                                                    "else",
+                                                    Node {
+                                                        node: "else",
+                                                        filename: "",
+                                                        line: 1,
+                                                        column: 9,
+                                                        end_line: 1,
+                                                        end_column: 13,
+                                                    },
                                                 ],
                                                 pkgpath: "",
                                                 ctx: Store,
@@ -47,22 +54,19 @@ Module {
                                         end_line: 1,
                                         end_column: 20,
                                     },
-                                    type_annotation: Some(
-                                        Node {
-                                            node: "b",
-                                            filename: "",
-                                            line: 1,
-                                            column: 15,
-                                            end_line: 1,
-                                            end_column: 16,
-                                        },
-                                    ),
                                     ty: Some(
                                         Node {
                                             node: Named(
                                                 Identifier {
                                                     names: [
-                                                        "b",
+                                                        Node {
+                                                            node: "b",
+                                                            filename: "",
+                                                            line: 1,
+                                                            column: 15,
+                                                            end_line: 1,
+                                                            end_column: 16,
+                                                        },
                                                     ],
                                                     pkgpath: "",
                                                     ctx: Load,

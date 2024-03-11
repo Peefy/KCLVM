@@ -4,7 +4,7 @@ PROJECT_NAME = KCLVM
 
 PWD:=$(shell pwd)
 
-KCLVM_VERSION := $(shell cat VERSION)
+VERSION := $(shell cat VERSION)
 BUILD_IMAGE:=kcllang/kcl-builder
 
 # export DOCKER_DEFAULT_PLATFORM=linux/amd64
@@ -44,6 +44,10 @@ test-grammar:
 .PHONY: fmt
 fmt:
 	make -C ./kclvm fmt
+
+.PHONY: tag
+tag:
+	scripts/tag.sh v$(VERSION)
 
 # ----------------
 # Docker

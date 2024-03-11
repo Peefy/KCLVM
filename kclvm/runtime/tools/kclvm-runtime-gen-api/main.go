@@ -1,4 +1,4 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+// Copyright The KCL Authors. All rights reserved.
 
 package main
 
@@ -205,7 +205,7 @@ func LoadAllApiSpec(root string) []ApiSpec {
 const tmplCApi = `
 {{$specList := .}}
 
-// Copyright 2021 The KCL Authors. All rights reserved.
+// Copyright The KCL Authors. All rights reserved.
 
 // Auto generated, DONOT EDIT!!!
 
@@ -281,7 +281,7 @@ enum kclvm_kind_t {
 const tmplLLApi = `
 {{$specList := .}}
 
-; Copyright 2021 The KCL Authors. All rights reserved.
+; Copyright The KCL Authors. All rights reserved.
 
 ; Auto generated, DONOT EDIT!!!
 
@@ -294,7 +294,7 @@ const tmplLLApi = `
 {{end}}
 
 define void @__kcl_keep_link_runtime(%kclvm_value_ref_t* %_a, %kclvm_context_t* %_b) {
-	call %kclvm_value_ref_t*() @kclvm_value_None()
+	call %kclvm_value_ref_t* @kclvm_value_None(%kclvm_context_t* %_b)
 	ret void
 }
 `
@@ -304,7 +304,7 @@ define void @__kcl_keep_link_runtime(%kclvm_value_ref_t* %_a, %kclvm_context_t* 
 const tmplRustEnum = `
 {{$specList := .}}
 
-// Copyright 2021 The KCL Authors. All rights reserved.
+// Copyright The KCL Authors. All rights reserved.
 
 // Auto generated, DONOT EDIT!!!
 
@@ -356,7 +356,7 @@ impl ApiFunc {
 const tmplRustAddr = `
 {{$specList := .}}
 
-// Copyright 2021 The KCL Authors. All rights reserved.
+// Copyright The KCL Authors. All rights reserved.
 
 // Auto generated, DONOT EDIT!!!
 

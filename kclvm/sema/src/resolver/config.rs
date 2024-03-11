@@ -1,16 +1,16 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::{
-    node::TypeRef,
     scope::{ScopeKind, ScopeObject, ScopeObjectKind},
     Resolver,
 };
-use crate::ty::sup;
-use crate::ty::SchemaType;
+use crate::ty::{sup, DictType, TypeInferMethods, TypeRef};
+use crate::ty::{Attr, SchemaType};
 use crate::ty::{Type, TypeKind};
+use indexmap::IndexMap;
 use kclvm_ast::ast;
 use kclvm_ast::pos::GetPos;
-use kclvm_error::{ErrorKind, Message, Position, Style};
+use kclvm_error::{diagnostic::Range, ErrorKind, Message, Position, Style};
 
 /// Config Expr type check state.
 ///
@@ -33,7 +33,7 @@ impl<'ctx> Resolver<'ctx> {
     pub(crate) fn new_config_expr_context_item(
         &mut self,
         name: &str,
-        ty: Rc<Type>,
+        ty: TypeRef,
         start: Position,
         end: Position,
     ) -> ScopeObject {
@@ -43,7 +43,6 @@ impl<'ctx> Resolver<'ctx> {
             end,
             ty,
             kind: ScopeObjectKind::Attribute,
-            used: false,
             doc: None,
         }
     }
@@ -73,7 +72,15 @@ impl<'ctx> Resolver<'ctx> {
                     let obj = obj.clone();
                     match obj {
                         Some(obj) => match &obj.ty.kind {
-                            TypeKind::Dict(_, val_ty) => Some(self.new_config_expr_context_item(
+                            TypeKind::List(elem_type) => Some(self.new_config_expr_context_item(
+                                key_name,
+                                elem_type.clone(),
+                                obj.start.clone(),
+                                obj.end.clone(),
+                            )),
+                            TypeKind::Dict(DictType {
+                                key_ty: _, val_ty, ..
+                            }) => Some(self.new_config_expr_context_item(
                                 key_name,
                                 val_ty.clone(),
                                 obj.start.clone(),
@@ -84,8 +91,8 @@ impl<'ctx> Resolver<'ctx> {
                                     Some(attr_ty_obj) => Some(self.new_config_expr_context_item(
                                         key_name,
                                         attr_ty_obj.ty.clone(),
-                                        attr_ty_obj.pos.clone(),
-                                        attr_ty_obj.pos.clone(),
+                                        attr_ty_obj.range.0.clone(),
+                                        attr_ty_obj.range.1.clone(),
                                     )),
                                     None => match &schema_ty.index_signature {
                                         Some(index_signature) => {
@@ -124,12 +131,12 @@ impl<'ctx> Resolver<'ctx> {
         match key {
             Some(key) => {
                 let names: Vec<String> = match &key.node {
-                    ast::Expr::Identifier(identifier) => identifier.names.clone(),
+                    ast::Expr::Identifier(identifier) => identifier.get_names(),
                     ast::Expr::Subscript(subscript) => {
                         if let ast::Expr::Identifier(identifier) = &subscript.value.node {
                             if let Some(index) = &subscript.index {
                                 if matches!(index.node, ast::Expr::NumberLit(_)) {
-                                    identifier.names.clone()
+                                    identifier.get_names()
                                 } else {
                                     return SwitchConfigContextState::KeepConfigUnchanged as usize;
                                 }
@@ -150,6 +157,15 @@ impl<'ctx> Resolver<'ctx> {
             }
             None => SwitchConfigContextState::KeepConfigUnchanged as usize,
         }
+    }
+
+    /// Switch the context in 'config_expr_context' stack by the list index `[]`
+    ///
+    /// Returns:
+    ///     push stack times
+    #[inline]
+    pub(crate) fn switch_list_expr_context(&mut self) -> usize {
+        self.switch_config_expr_context_by_names(&["[]".to_string()])
     }
 
     /// Switch the context in 'config_expr_context' stack by name
@@ -185,7 +201,7 @@ impl<'ctx> Resolver<'ctx> {
     /// Pop method for the 'config_expr_context' stack
     ///
     /// Returns:
-    ///     the item poped from stack.
+    ///     the item popped from stack.
     #[inline]
     pub(crate) fn restore_config_expr_context(&mut self) -> Option<ScopeObject> {
         match self.ctx.config_expr_context.pop() {
@@ -242,9 +258,7 @@ impl<'ctx> Resolver<'ctx> {
         if !name.is_empty() {
             if let Some(Some(obj)) = self.ctx.config_expr_context.last() {
                 let obj = obj.clone();
-                if let TypeKind::Schema(schema_ty) = &obj.ty.kind {
-                    self.check_config_attr(name, &key.get_pos(), schema_ty);
-                }
+                self.must_check_config_attr(name, &key.get_span_pos(), &obj.ty);
             }
         }
     }
@@ -267,13 +281,13 @@ impl<'ctx> Resolver<'ctx> {
             if let Some(Some(_)) = self.ctx.config_expr_context.last() {
                 let mut has_index = false;
                 let names: Vec<String> = match &key.node {
-                    ast::Expr::Identifier(identifier) => identifier.names.clone(),
+                    ast::Expr::Identifier(identifier) => identifier.get_names(),
                     ast::Expr::Subscript(subscript) => {
                         if let ast::Expr::Identifier(identifier) = &subscript.value.node {
                             if let Some(index) = &subscript.index {
                                 if matches!(index.node, ast::Expr::NumberLit(_)) {
                                     has_index = true;
-                                    identifier.names.clone()
+                                    identifier.get_names()
                                 } else {
                                     return;
                                 }
@@ -301,30 +315,96 @@ impl<'ctx> Resolver<'ctx> {
                 }
                 if let Some(Some(obj_last)) = self.ctx.config_expr_context.last() {
                     let ty = obj_last.ty.clone();
-                    let pos = obj_last.start.clone();
-                    self.must_assignable_to(val_ty, ty, key.get_pos(), Some(pos));
+                    self.must_assignable_to(
+                        val_ty,
+                        ty,
+                        key.get_span_pos(),
+                        Some(obj_last.get_span_pos()),
+                    );
                 }
                 self.clear_config_expr_context(stack_depth, false);
             }
         }
     }
 
+    pub(crate) fn get_config_attr_err_suggestion(
+        &self,
+        attr: &str,
+        schema_ty: &SchemaType,
+    ) -> (Vec<String>, String) {
+        let mut suggestion = String::new();
+        // Calculate the closest miss attributes.
+        let suggs = suggestions::provide_suggestions(attr, schema_ty.attrs.keys());
+        if suggs.len() > 0 {
+            suggestion = format!(", did you mean '{:?}'?", suggs);
+        }
+        (suggs, suggestion)
+    }
+
     /// Check config attr has been defined.
-    pub(crate) fn check_config_attr(&mut self, attr: &str, pos: &Position, schema_ty: &SchemaType) {
+    pub(crate) fn must_check_config_attr(&mut self, attr: &str, range: &Range, ty: &TypeRef) {
+        if let TypeKind::Schema(schema_ty) = &ty.kind {
+            self.check_config_attr(attr, range, schema_ty)
+        } else if let TypeKind::Union(types) = &ty.kind {
+            let mut schema_names = vec![];
+            let mut total_suggs = vec![];
+            for ty in types {
+                if let TypeKind::Schema(schema_ty) = &ty.kind {
+                    if schema_ty.get_obj_of_attr(attr).is_none()
+                        && !schema_ty.is_mixin
+                        && schema_ty.index_signature.is_none()
+                    {
+                        let mut suggs =
+                            suggestions::provide_suggestions(attr, schema_ty.attrs.keys());
+                        total_suggs.append(&mut suggs);
+                        schema_names.push(schema_ty.name.clone());
+                    } else {
+                        // If there is a schema attribute that meets the condition, the type check passes
+                        return;
+                    }
+                }
+            }
+            if !schema_names.is_empty() {
+                self.handler.add_compile_error_with_suggestions(
+                    &format!(
+                        "Cannot add member '{}' to '{}'{}",
+                        attr,
+                        if schema_names.len() > 1 {
+                            format!("schemas {:?}", schema_names)
+                        } else {
+                            format!("schema {}", schema_names[0])
+                        },
+                        if total_suggs.is_empty() {
+                            "".to_string()
+                        } else {
+                            format!(", did you mean '{:?}'?", total_suggs)
+                        },
+                    ),
+                    range.clone(),
+                    Some(total_suggs),
+                );
+            }
+        }
+    }
+
+    /// Check config attr has been defined.
+    pub(crate) fn check_config_attr(&mut self, attr: &str, range: &Range, schema_ty: &SchemaType) {
         let runtime_type = kclvm_runtime::schema_runtime_type(&schema_ty.name, &schema_ty.pkgpath);
         match self.ctx.schema_mapping.get(&runtime_type) {
             Some(schema_mapping_ty) => {
-                let schema_ty = schema_mapping_ty.borrow();
-                if schema_ty.get_obj_of_attr(attr).is_none()
-                    && !schema_ty.is_mixin
-                    && schema_ty.index_signature.is_none()
+                let schema_ty_ref = schema_mapping_ty.borrow();
+                if schema_ty_ref.get_obj_of_attr(attr).is_none()
+                    && !schema_ty_ref.is_mixin
+                    && schema_ty_ref.index_signature.is_none()
                 {
-                    self.handler.add_compile_error(
+                    let (suggs, msg) = self.get_config_attr_err_suggestion(attr, schema_ty);
+                    self.handler.add_compile_error_with_suggestions(
                         &format!(
-                            "Cannot add member '{}' to schema '{}'",
-                            attr, schema_ty.name
+                            "Cannot add member '{}' to schema '{}'{}",
+                            attr, schema_ty_ref.name, msg,
                         ),
-                        pos.clone(),
+                        range.clone(),
+                        Some(suggs),
                     );
                 }
             }
@@ -333,12 +413,14 @@ impl<'ctx> Resolver<'ctx> {
                     && !schema_ty.is_mixin
                     && schema_ty.index_signature.is_none()
                 {
-                    self.handler.add_compile_error(
+                    let (suggs, msg) = self.get_config_attr_err_suggestion(attr, schema_ty);
+                    self.handler.add_compile_error_with_suggestions(
                         &format!(
-                            "Cannot add member '{}' to schema '{}'",
-                            attr, schema_ty.name
+                            "Cannot add member '{}' to schema '{}'{}",
+                            attr, schema_ty.name, msg,
                         ),
-                        pos.clone(),
+                        range.clone(),
+                        Some(suggs),
                     );
                 }
             }
@@ -350,7 +432,7 @@ impl<'ctx> Resolver<'ctx> {
         &mut self,
         schema_ty: &SchemaType,
         attr: &str,
-    ) -> (bool, Rc<Type>) {
+    ) -> (bool, TypeRef) {
         let runtime_type = kclvm_runtime::schema_runtime_type(&schema_ty.name, &schema_ty.pkgpath);
         match self.ctx.schema_mapping.get(&runtime_type) {
             Some(schema_mapping_ty) => {
@@ -383,13 +465,18 @@ impl<'ctx> Resolver<'ctx> {
         &mut self,
         entries: &'ctx [ast::NodeRef<ast::ConfigEntry>],
     ) -> TypeRef {
-        self.enter_scope(
-            self.ctx.start_pos.clone(),
-            self.ctx.end_pos.clone(),
-            ScopeKind::Config,
-        );
+        let (start, end) = match entries.len() {
+            0 => (self.ctx.start_pos.clone(), self.ctx.end_pos.clone()),
+            1 => entries[0].get_span_pos(),
+            _ => (
+                entries.first().unwrap().get_pos(),
+                entries.last().unwrap().get_end_pos(),
+            ),
+        };
+        self.enter_scope(start, end, ScopeKind::Config);
         let mut key_types: Vec<TypeRef> = vec![];
         let mut val_types: Vec<TypeRef> = vec![];
+        let mut attrs: IndexMap<String, Attr> = IndexMap::new();
         for item in entries {
             let key = &item.node.key;
             let value = &item.node.value;
@@ -406,22 +493,33 @@ impl<'ctx> Resolver<'ctx> {
                             val_ty = Type::dict_ref(self.str_ty(), val_ty.clone());
                         }
                         let key_ty = if identifier.names.len() == 1 {
-                            let name = &identifier.names[0];
+                            let name = &identifier.names[0].node;
                             let key_ty = if self.ctx.local_vars.contains(name) {
                                 self.expr(key)
                             } else {
-                                Rc::new(Type::str_lit(name))
+                                Arc::new(Type::str_lit(name))
                             };
-                            self.check_attr_ty(&key_ty, key.get_pos());
+                            self.check_attr_ty(&key_ty, key.get_span_pos());
+                            let ty = if let Some(attr) = attrs.get(name) {
+                                sup(&[attr.ty.clone(), val_ty.clone()])
+                            } else {
+                                val_ty.clone()
+                            };
+                            attrs.insert(
+                                name.to_string(),
+                                Attr {
+                                    ty: self.ctx.ty_ctx.infer_to_variable_type(ty.clone()),
+                                    range: key.get_span_pos(),
+                                },
+                            );
                             self.insert_object(
                                 name,
                                 ScopeObject {
                                     name: name.to_string(),
                                     start: key.get_pos(),
                                     end: key.get_end_pos(),
-                                    ty: val_ty.clone(),
+                                    ty,
                                     kind: ScopeObjectKind::Attribute,
-                                    used: false,
                                     doc: None,
                                 },
                             );
@@ -445,17 +543,28 @@ impl<'ctx> Resolver<'ctx> {
                     _ => {
                         let key_ty = self.expr(key);
                         let val_ty = self.expr(value);
-                        self.check_attr_ty(&key_ty, key.get_pos());
+                        self.check_attr_ty(&key_ty, key.get_span_pos());
                         if let ast::Expr::StringLit(string_lit) = &key.node {
+                            let ty = if let Some(attr) = attrs.get(&string_lit.value) {
+                                sup(&[attr.ty.clone(), val_ty.clone()])
+                            } else {
+                                val_ty.clone()
+                            };
+                            attrs.insert(
+                                string_lit.value.clone(),
+                                Attr {
+                                    ty: self.ctx.ty_ctx.infer_to_variable_type(ty.clone()),
+                                    range: key.get_span_pos(),
+                                },
+                            );
                             self.insert_object(
                                 &string_lit.value,
                                 ScopeObject {
                                     name: string_lit.value.clone(),
                                     start: key.get_pos(),
                                     end: key.get_end_pos(),
-                                    ty: val_ty.clone(),
+                                    ty,
                                     kind: ScopeObjectKind::Attribute,
-                                    used: false,
                                     doc: None,
                                 },
                             );
@@ -471,7 +580,7 @@ impl<'ctx> Resolver<'ctx> {
                         TypeKind::None | TypeKind::Any => {
                             val_types.push(val_ty.clone());
                         }
-                        TypeKind::Dict(key_ty, val_ty) => {
+                        TypeKind::Dict(DictType { key_ty, val_ty, .. }) => {
                             key_types.push(key_ty.clone());
                             val_types.push(val_ty.clone());
                         }
@@ -500,7 +609,7 @@ impl<'ctx> Resolver<'ctx> {
                                     "only dict and schema can be used ** unpack, got '{}'",
                                     val_ty.ty_str()
                                 ),
-                                value.get_pos(),
+                                value.get_span_pos(),
                             );
                         }
                     }
@@ -515,13 +624,14 @@ impl<'ctx> Resolver<'ctx> {
                 self.handler.add_error(
                     ErrorKind::IllegalAttributeError,
                     &[Message {
-                        pos: value.get_pos(),
+                        range: value.get_span_pos(),
                         style: Style::LineAndColumn,
                         message: format!(
                             "only list type can in inserted, got '{}'",
                             val_ty.ty_str()
                         ),
                         note: None,
+                        suggested_replacement: None,
                     }],
                 );
             }
@@ -530,6 +640,6 @@ impl<'ctx> Resolver<'ctx> {
         self.leave_scope();
         let key_ty = sup(&key_types);
         let val_ty = sup(&val_types);
-        Type::dict_ref(key_ty, val_ty)
+        Type::dict_ref_with_attrs(key_ty, val_ty, attrs)
     }
 }

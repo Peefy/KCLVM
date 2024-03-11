@@ -1,4 +1,4 @@
-use kclvm_error::Position;
+use kclvm_error::{diagnostic::Range, Position};
 
 use crate::ast;
 
@@ -9,7 +9,7 @@ pub trait ContainsPos {
 
 pub trait GetPos {
     /// Get start and end position from node.
-    fn get_span_pos(&self) -> (Position, Position) {
+    fn get_span_pos(&self) -> Range {
         (self.get_pos(), self.get_end_pos())
     }
     /// Get start pos from node.
@@ -22,6 +22,12 @@ impl<T> ContainsPos for ast::Node<T> {
     fn contains_pos(&self, pos: &Position) -> bool {
         let (start_pos, end_pos) = self.get_span_pos();
         start_pos.less_equal(pos) && pos.less_equal(&end_pos)
+    }
+}
+
+impl ContainsPos for Range {
+    fn contains_pos(&self, pos: &Position) -> bool {
+        self.0.filename == pos.filename && self.0.less_equal(pos) && pos.less_equal(&self.1)
     }
 }
 

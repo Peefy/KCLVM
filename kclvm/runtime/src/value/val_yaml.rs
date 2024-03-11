@@ -1,4 +1,4 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 
 extern crate serde_json;
 extern crate serde_yaml;
@@ -45,20 +45,20 @@ impl Default for YamlEncodeOptions {
 impl ValueRef {
     /// Decode a yaml single document string to a ValueRef.
     /// Returns [serde_yaml::Error] when decoding fails.
-    pub fn from_yaml(s: &str) -> Result<Self, serde_yaml::Error> {
+    pub fn from_yaml(ctx: &mut Context, s: &str) -> Result<Self, serde_yaml::Error> {
         // We use JsonValue to implement the KCL universal serialization object.
         let json_value: JsonValue = serde_yaml::from_str(s)?;
-        Ok(Self::from_json(serde_json::to_string(&json_value).unwrap().as_ref()).unwrap())
+        Ok(Self::from_json(ctx, serde_json::to_string(&json_value).unwrap().as_ref()).unwrap())
     }
 
     /// Decode yaml stream string that contains `---` to a ValueRef.
     /// Returns [serde_yaml::Error] when decoding fails.
-    pub fn from_yaml_stream(s: &str) -> Result<Self, serde_yaml::Error> {
+    pub fn from_yaml_stream(ctx: &mut Context, s: &str) -> Result<Self, serde_yaml::Error> {
         let documents = serde_yaml::Deserializer::from_str(s);
         let mut result = ValueRef::list_value(None);
         for document in documents {
             let json_value: JsonValue = JsonValue::deserialize(document)?;
-            result.list_append(&ValueRef::parse_json(&json_value))
+            result.list_append(&ValueRef::parse_json(ctx, &json_value))
         }
         if result.is_empty() {
             // Empty result returns a empty dict.
@@ -100,7 +100,7 @@ impl ValueRef {
             ignore_private: opt.ignore_private,
             ignore_none: opt.ignore_none,
         };
-        let json = self.to_json_string_with_option(&json_opt);
+        let json = self.to_json_string_with_options(&json_opt);
         let yaml_value: serde_yaml::Value = serde_json::from_str(json.as_ref()).unwrap();
         match serde_yaml::to_string(&yaml_value) {
             Ok(s) => {
@@ -118,6 +118,7 @@ mod test_value_yaml {
 
     #[test]
     fn test_value_from_yaml() {
+        let mut ctx = Context::new();
         let cases = [
             ("a: 1\n", ValueRef::dict(Some(&[("a", &ValueRef::int(1))]))),
             (
@@ -142,13 +143,14 @@ mod test_value_yaml {
             ),
         ];
         for (yaml_str, expected) in cases {
-            let result = ValueRef::from_yaml(yaml_str);
+            let result = ValueRef::from_yaml(&mut ctx, yaml_str);
             assert_eq!(result.unwrap(), expected);
         }
     }
 
     #[test]
     fn test_value_from_yaml_fail() {
+        let mut ctx = Context::new();
         let cases = [
             (
                 "a: 1\n  b: 2\nc: 3",
@@ -156,17 +158,18 @@ mod test_value_yaml {
             ),
             (
                 "a:\n- 1\n  -2\n-3",
-                "while parsing a block mapping, did not find expected key at line 4 column 1",
+                "could not find expected ':' at line 5 column 1, while scanning a simple key at line 4 column 1",
             ),
         ];
         for (yaml_str, expected) in cases {
-            let result = ValueRef::from_yaml(yaml_str);
+            let result = ValueRef::from_yaml(&mut ctx, yaml_str);
             assert_eq!(result.err().unwrap().to_string(), expected);
         }
     }
 
     #[test]
     fn test_value_from_yaml_stream() {
+        let mut ctx = Context::new();
         let cases = [
             ("a: 1\n", ValueRef::dict(Some(&[("a", &ValueRef::int(1))]))),
             (
@@ -178,13 +181,14 @@ mod test_value_yaml {
             ),
         ];
         for (yaml_str, expected) in cases {
-            let result = ValueRef::from_yaml_stream(yaml_str);
+            let result = ValueRef::from_yaml_stream(&mut ctx, yaml_str);
             assert_eq!(result.unwrap(), expected);
         }
     }
 
     #[test]
     fn test_value_from_yaml_stream_fail() {
+        let mut ctx = Context::new();
         let cases = [
             (
                 "a: 1\n---\na: 1\n  b: 2\nc: 3",
@@ -192,11 +196,11 @@ mod test_value_yaml {
             ),
             (
                 "b:3\n---\na:\n- 1\n  -2\n-3",
-                "while parsing a block mapping, did not find expected key at line 6 column 1",
+                "could not find expected ':' at line 7 column 1, while scanning a simple key at line 6 column 1",
             ),
         ];
         for (yaml_str, expected) in cases {
-            let result = ValueRef::from_yaml_stream(yaml_str);
+            let result = ValueRef::from_yaml_stream(&mut ctx, yaml_str);
             assert_eq!(result.err().unwrap().to_string(), expected);
         }
     }
@@ -214,7 +218,7 @@ mod test_value_yaml {
                     ("a", &ValueRef::list_int(&[1, 2, 3])),
                     ("b", &ValueRef::str("s")),
                 ])),
-                "a:\n  - 1\n  - 2\n  - 3\nb: s\n",
+                "a:\n- 1\n- 2\n- 3\nb: s\n",
             ),
         ];
         for (value, expected) in cases {
@@ -271,7 +275,7 @@ mod test_value_yaml {
                     ("b", &ValueRef::list_int(&[1, 2, 3])),
                     ("a", &ValueRef::str("s")),
                 ])),
-                "a: s\nb:\n  - 1\n  - 2\n  - 3\n",
+                "a: s\nb:\n- 1\n- 2\n- 3\n",
                 YamlEncodeOptions {
                     sort_keys: true,
                     ignore_private: false,

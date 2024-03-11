@@ -4,7 +4,8 @@ use crate::resolver::scope::Scope;
 use crate::{declare_lint_pass, resolver::scope::ScopeObjectKind};
 use indexmap::IndexSet;
 use kclvm_ast::ast;
-use kclvm_error::{Handler, Level, Message, Position, Style, WarningKind};
+use kclvm_ast::pos::GetPos;
+use kclvm_error::{Handler, Level, Message, Style, WarningKind};
 
 /// The 'import_position' lint detects import statements that are not declared at the top of file.
 /// ### Example
@@ -30,7 +31,12 @@ pub static IMPORT_POSITION: &Lint = &Lint {
 declare_lint_pass!(ImportPosition => [IMPORT_POSITION]);
 
 impl LintPass for ImportPosition {
-    fn check_module(&mut self, handler: &mut Handler, ctx: &mut LintContext, module: &ast::Module) {
+    fn check_module(
+        &mut self,
+        handler: &mut Handler,
+        _ctx: &mut LintContext,
+        module: &ast::Module,
+    ) {
         let mut first_non_importstmt = std::u64::MAX;
         for stmt in &module.body {
             match &stmt.node {
@@ -48,11 +54,7 @@ impl LintPass for ImportPosition {
                     handler.add_warning(
                         WarningKind::ImportPositionWarning,
                         &[Message {
-                            pos: Position {
-                                filename: ctx.filename.clone(),
-                                line: stmt.line,
-                                column: None,
-                            },
+                            range: stmt.get_span_pos(),
                             style: Style::Line,
                             message: format!(
                                 "Importstmt should be placed at the top of the module"
@@ -60,6 +62,7 @@ impl LintPass for ImportPosition {
                             note: Some(
                                 "Consider moving tihs statement to the top of the file".to_string(),
                             ),
+                            suggested_replacement: None,
                         }],
                     );
                 }
@@ -97,20 +100,21 @@ impl LintPass for UnusedImport {
         let scope_objs = &scope.elems;
         for (_, scope_obj) in scope_objs {
             let scope_obj = scope_obj.borrow();
-            if scope_obj.kind == ScopeObjectKind::Module && scope_obj.used == false {
-                handler.add_warning(
-                    WarningKind::UnusedImportWarning,
-                    &[Message {
-                        pos: Position {
-                            filename: scope_obj.start.filename.clone(),
-                            line: scope_obj.start.line,
-                            column: None,
-                        },
-                        style: Style::Line,
-                        message: format!("Module '{}' imported but unused", scope_obj.name),
-                        note: Some("Consider removing this statement".to_string()),
-                    }],
-                );
+            if let ScopeObjectKind::Module(m) = &scope_obj.kind {
+                for (stmt, has_used) in &m.import_stmts {
+                    if !has_used {
+                        handler.add_warning(
+                            WarningKind::UnusedImportWarning,
+                            &[Message {
+                                range: stmt.get_span_pos(),
+                                style: Style::Line,
+                                message: format!("Module '{}' imported but unused", scope_obj.name),
+                                note: Some("Consider removing this statement".to_string()),
+                                suggested_replacement: None,
+                            }],
+                        );
+                    }
+                }
             }
         }
     }
@@ -141,29 +145,31 @@ pub static REIMPORT: &Lint = &Lint {
 declare_lint_pass!(ReImport => [REIMPORT]);
 
 impl LintPass for ReImport {
-    fn check_module(&mut self, handler: &mut Handler, ctx: &mut LintContext, module: &ast::Module) {
+    fn check_module(
+        &mut self,
+        handler: &mut Handler,
+        _ctx: &mut LintContext,
+        module: &ast::Module,
+    ) {
         let mut import_names = IndexSet::<String>::new();
         for stmt in &module.body {
             if let ast::Stmt::Import(import_stmt) = &stmt.node {
-                if import_names.contains(&import_stmt.path) {
+                if import_names.contains(&import_stmt.path.node) {
                     handler.add_warning(
                         WarningKind::ReimportWarning,
                         &[Message {
-                            pos: Position {
-                                filename: ctx.filename.clone(),
-                                line: stmt.line,
-                                column: None,
-                            },
+                            range: stmt.get_span_pos(),
                             style: Style::Line,
                             message: format!(
                                 "Module '{}' is reimported multiple times",
                                 &import_stmt.name
                             ),
                             note: Some("Consider removing this statement".to_string()),
+                            suggested_replacement: None,
                         }],
                     );
                 } else {
-                    import_names.insert(import_stmt.path.clone());
+                    import_names.insert(import_stmt.path.node.clone());
                 }
             }
         }

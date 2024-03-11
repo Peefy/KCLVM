@@ -1,9 +1,11 @@
 use kclvm_error::Diagnostic as KCLDiagnostic;
+use kclvm_error::DiagnosticId;
 use kclvm_error::Level;
 use kclvm_error::Message;
 use kclvm_error::Position as KCLPos;
 use lsp_types::*;
 use ra_ap_vfs::FileId;
+use serde_json::json;
 
 use crate::state::LanguageServerSnapshot;
 use std::{
@@ -20,22 +22,70 @@ pub fn lsp_pos(pos: &KCLPos) -> Position {
     }
 }
 
+pub fn lsp_location(file_path: String, start: &KCLPos, end: &KCLPos) -> Option<Location> {
+    let uri = Url::from_file_path(file_path).ok()?;
+    Some(Location {
+        uri,
+        range: Range {
+            start: lsp_pos(start),
+            end: lsp_pos(end),
+        },
+    })
+}
+
 /// Convert KCL Message to LSP Diagnostic
-fn kcl_msg_to_lsp_diags(msg: &Message, severity: DiagnosticSeverity) -> Diagnostic {
-    let kcl_pos = msg.pos.clone();
-    let start_position = lsp_pos(&kcl_pos);
-    let end_position = lsp_pos(&kcl_pos);
+fn kcl_msg_to_lsp_diags(
+    msg: &Message,
+    severity: DiagnosticSeverity,
+    related_msg: Vec<Message>,
+    code: Option<NumberOrString>,
+) -> Diagnostic {
+    let range = msg.range.clone();
+    let start_position = lsp_pos(&range.0);
+    let end_position = lsp_pos(&range.1);
+
+    let data = msg
+        .suggested_replacement
+        .as_ref()
+        .map(|s_vec| {
+            s_vec
+                .iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<&String>>()
+        })
+        .filter(|v| !v.is_empty())
+        .map(|s| json!({ "suggested_replacement": s }));
+
+    let related_information = if related_msg.is_empty() {
+        None
+    } else {
+        Some(
+            related_msg
+                .iter()
+                .map(|m| DiagnosticRelatedInformation {
+                    location: Location {
+                        uri: Url::from_file_path(m.range.0.filename.clone()).unwrap(),
+                        range: Range {
+                            start: lsp_pos(&m.range.0),
+                            end: lsp_pos(&m.range.1),
+                        },
+                    },
+                    message: m.message.clone(),
+                })
+                .collect(),
+        )
+    };
 
     Diagnostic {
         range: Range::new(start_position, end_position),
         severity: Some(severity),
-        code: None,
+        code,
         code_description: None,
         source: None,
         message: msg.message.clone(),
-        related_information: None,
+        related_information,
         tags: None,
-        data: None,
+        data,
     }
 }
 
@@ -44,17 +94,44 @@ fn kcl_err_level_to_severity(level: Level) -> DiagnosticSeverity {
         Level::Error => DiagnosticSeverity::ERROR,
         Level::Warning => DiagnosticSeverity::WARNING,
         Level::Note => DiagnosticSeverity::HINT,
+        Level::Suggestions => DiagnosticSeverity::HINT,
     }
 }
 
 /// Convert KCL Diagnostic to LSP Diagnostics.
-/// Because the diagnostic of KCL contains multiple messages, and each messages corresponds to a diagnostic of LSP, the return value is a vec
 pub fn kcl_diag_to_lsp_diags(diag: &KCLDiagnostic, file_name: &str) -> Vec<Diagnostic> {
-    diag.messages
-        .iter()
-        .filter(|msg| msg.pos.filename == file_name)
-        .map(|msg| kcl_msg_to_lsp_diags(msg, kcl_err_level_to_severity(diag.level)))
-        .collect()
+    let mut diags = vec![];
+    for (idx, msg) in diag.messages.iter().enumerate() {
+        if msg.range.0.filename == file_name {
+            let mut related_msg = diag.messages.clone();
+            related_msg.remove(idx);
+            let code = if diag.code.is_some() {
+                Some(kcl_diag_id_to_lsp_diag_code(diag.code.clone().unwrap()))
+            } else {
+                None
+            };
+
+            let lsp_diag = kcl_msg_to_lsp_diags(
+                msg,
+                kcl_err_level_to_severity(diag.level),
+                related_msg,
+                code,
+            );
+
+            diags.push(lsp_diag);
+        }
+    }
+    diags
+}
+
+/// Convert KCL Diagnostic ID to LSP Diagnostics code.
+/// Todo: use unique id/code instead of name()
+pub(crate) fn kcl_diag_id_to_lsp_diag_code(id: DiagnosticId) -> NumberOrString {
+    match id {
+        DiagnosticId::Error(err) => NumberOrString::String(err.name()),
+        DiagnosticId::Warning(warn) => NumberOrString::String(warn.name()),
+        DiagnosticId::Suggestions => NumberOrString::String("suggestion".to_string()),
+    }
 }
 
 /// Returns the `Url` associated with the specified `FileId`.

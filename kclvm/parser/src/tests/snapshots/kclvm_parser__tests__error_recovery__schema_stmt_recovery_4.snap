@@ -1,18 +1,17 @@
 ---
 source: parser/src/tests/error_recovery.rs
-assertion_line: 185
 expression: "crate::tests::parsing_module_string(r#\"schema A:B\"#)"
 ---
 Module {
     filename: "",
     pkg: "",
-    doc: "",
+    doc: None,
     name: "",
     body: [
         Node {
             node: Schema(
                 SchemaStmt {
-                    doc: "",
+                    doc: None,
                     name: Node {
                         node: "A",
                         filename: "",
@@ -47,7 +46,14 @@ Module {
                             node: Identifier(
                                 Identifier {
                                     names: [
-                                        "B",
+                                        Node {
+                                            node: "B",
+                                            filename: "",
+                                            line: 1,
+                                            column: 9,
+                                            end_line: 1,
+                                            end_column: 10,
+                                        },
                                     ],
                                     pkgpath: "",
                                     ctx: Load,

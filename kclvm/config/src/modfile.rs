@@ -1,9 +1,12 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 
+use anyhow::Result;
 use kclvm_utils::path::PathPrefix;
 use serde::Deserialize;
 use std::{env, fs, io::Read, path::PathBuf};
 use toml;
+
+use crate::path::ModRelativePath;
 
 pub const KCL_MOD_FILE: &str = "kcl.mod";
 pub const KCL_FILE_SUFFIX: &str = ".k";
@@ -20,7 +23,7 @@ pub const DEFAULT_KPM_SUBDIR: &str = "kpm";
 pub fn get_vendor_home() -> String {
     match env::var(KCL_PKG_PATH) {
         Ok(path) => path,
-        Err(_) => create_default_vendor_home().unwrap_or(String::default()),
+        Err(_) => create_default_vendor_home().unwrap_or_default(),
     }
 }
 
@@ -81,7 +84,7 @@ pub struct KCLModFileExpectedSection {
     pub global_version: Option<String>,
 }
 
-pub fn get_pkg_root_from_paths(file_paths: &[String]) -> Result<String, String> {
+pub fn get_pkg_root_from_paths(file_paths: &[String], workdir: String) -> Result<String, String> {
     if file_paths.is_empty() {
         return Err("No input KCL files or paths".to_string());
     }
@@ -89,9 +92,11 @@ pub fn get_pkg_root_from_paths(file_paths: &[String]) -> Result<String, String> 
     let mut m = std::collections::HashMap::<String, String>::new();
     let mut last_root = "".to_string();
     for s in file_paths {
-        if s.contains(KCL_MOD_PATH_ENV) {
+        let path = ModRelativePath::from(s.to_string());
+        if path.is_relative_path().map_err(|err| err.to_string())? {
             continue;
         }
+
         if let Some(root) = get_pkg_root(s) {
             m.insert(root.clone(), root.clone());
             last_root = root.clone();
@@ -101,10 +106,12 @@ pub fn get_pkg_root_from_paths(file_paths: &[String]) -> Result<String, String> 
         return Ok("".to_string());
     }
     if m.len() == 1 {
-        return Ok(last_root);
+        Ok(last_root)
+    } else if !workdir.is_empty() {
+        return Ok(workdir);
+    } else {
+        return Ok("".to_string());
     }
-
-    Err(format!("conflict kcl.mod file paths: {:?}", m))
 }
 
 pub fn get_pkg_root(k_file_path: &str) -> Option<String> {
@@ -157,17 +164,17 @@ mod modfile_test {
     #[test]
     fn test_get_pkg_root_from_paths() {
         assert_eq!(
-            get_pkg_root_from_paths(&[]),
+            get_pkg_root_from_paths(&[], "".to_string()),
             Err("No input KCL files or paths".to_string())
         );
         assert_eq!(
-            get_pkg_root_from_paths(&["wrong_path".to_string()]),
+            get_pkg_root_from_paths(&["wrong_path".to_string()], "".to_string()),
             Ok("".to_string())
         );
         let expected_root = std::path::Path::new(TEST_ROOT).canonicalize().unwrap();
         let expected = expected_root.adjust_canonicalization();
         assert_eq!(
-            get_pkg_root_from_paths(&[SETTINGS_FILE.to_string()]),
+            get_pkg_root_from_paths(&[SETTINGS_FILE.to_string()], "".to_string()),
             Ok(expected.to_string())
         );
     }

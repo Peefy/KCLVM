@@ -1,13 +1,11 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
+
+use indexmap::IndexSet;
 
 use crate::*;
 
-pub const SETTINGS_OUTPUT_KEY: &str = "output_type";
-pub const SETTINGS_SCHEMA_TYPE_KEY: &str = "__schema_type__";
-pub const SETTINGS_OUTPUT_STANDALONE: &str = "STANDALONE";
-pub const SETTINGS_OUTPUT_INLINE: &str = "INLINE";
-pub const SETTINGS_OUTPUT_IGNORE: &str = "IGNORE";
-pub const SCHEMA_SETTINGS_ATTR_NAME: &str = "__settings__";
+use self::walker::walk_value_mut;
+
 pub const CONFIG_META_FILENAME: &str = "$filename";
 pub const CONFIG_META_LINE: &str = "$lineno";
 pub const CONFIG_META_COLUMN: &str = "$columnno";
@@ -19,6 +17,7 @@ pub const MAIN_PKG_PATH: &str = "__main__";
 pub const PKG_PATH_PREFIX: char = '@';
 pub const CAL_MAP_RUNTIME_TYPE: &str = "cal_map_runtime_type";
 pub const CAL_MAP_META_LINE: &str = "cal_map_meta_line";
+pub const CAL_MAP_INDEX_SIGNATURE: &str = "$cal_map_index_signature";
 
 /// Get the schema runtime type use the schema name and pkgpath
 pub fn schema_runtime_type(name: &str, pkgpath: &str) -> String {
@@ -43,6 +42,8 @@ impl ValueRef {
         config_keys: &[String],
         config_meta: &ValueRef,
         optional_mapping: &ValueRef,
+        args: Option<ValueRef>,
+        kwargs: Option<ValueRef>,
     ) -> Self {
         if self.is_dict() {
             Self::from(Value::schema_value(Box::new(SchemaValue {
@@ -52,6 +53,8 @@ impl ValueRef {
                 config_keys: config_keys.to_owned(),
                 config_meta: config_meta.clone(),
                 optional_mapping: optional_mapping.clone(),
+                args: args.unwrap_or(ValueRef::list(None)),
+                kwargs: kwargs.unwrap_or(ValueRef::dict(None)),
             })))
         } else if self.is_schema() {
             self.clone()
@@ -100,13 +103,38 @@ impl ValueRef {
         }
     }
 
+    /// Set of keys not in the schema.
+    pub fn keys_not_in_schema(&self, ty: &SchemaType, cal_order: &ValueRef) -> IndexSet<String> {
+        let mut keys = IndexSet::new();
+        if self.is_config() {
+            let config = self.as_dict_ref();
+            for (key, _) in &config.values {
+                let no_such_attr = ty.attrs.get(key).is_none()
+                    && cal_order.dict_get_value(key).is_none()
+                    && !key.starts_with('_');
+                let has_index_signature = ty.has_index_signature
+                    || cal_order.dict_get_value(CAL_MAP_INDEX_SIGNATURE).is_some();
+                if !has_index_signature && no_such_attr {
+                    keys.insert(key.to_string());
+                }
+            }
+        }
+        keys
+    }
+
+    /// Check whether the config fits into the schema type.
+    #[inline]
+    pub fn is_fit_schema(&self, ty: &SchemaType, cal_order: &ValueRef) -> bool {
+        self.keys_not_in_schema(ty, cal_order).is_empty()
+    }
+
     /// Check schema optional attributes.
-    pub fn schema_check_attr_optional(&self, recursive: bool) {
+    pub fn schema_check_attr_optional(&self, ctx: &mut Context, recursive: bool) {
         let binding = self.rc.borrow();
         let attr_map = match &*binding {
             Value::schema_value(schema) => &schema.config.values,
             Value::dict_value(schema) => &schema.values,
-            _ => panic!("Invalid schema/dict value, got {}", self.type_str()),
+            _ => panic!("invalid schema or dict value, got {}", self.type_str()),
         };
         let optional_mapping = self.schema_optional_mapping();
         let optional_mapping_ref = optional_mapping.rc.borrow();
@@ -120,7 +148,6 @@ impl ValueRef {
                     if is_required && value.is_none_or_undefined() {
                         let filename = config_meta.get_by_key(CONFIG_META_FILENAME);
                         let line = config_meta.get_by_key(CONFIG_META_LINE);
-                        let ctx = Context::current_context_mut();
                         if let Some(filename) = filename {
                             ctx.set_kcl_filename(&filename.as_str());
                         }
@@ -137,9 +164,12 @@ impl ValueRef {
                 // Recursive check schema values for every attributes.
                 if recursive {
                     for value in attr_map.values() {
-                        if value.is_schema() {
-                            value.schema_check_attr_optional(recursive);
-                        }
+                        // For composite type structures, we recursively check the schema within them.
+                        walk_value_mut(value, &mut |value: &ValueRef| {
+                            if value.is_schema() {
+                                value.schema_check_attr_optional(ctx, true);
+                            }
+                        })
                     }
                 }
             }
@@ -150,22 +180,44 @@ impl ValueRef {
         }
     }
 
-    pub fn schema_default_settings(&mut self, config: &ValueRef, runtime_type: &str) {
-        let settings = self.dict_get_value(SCHEMA_SETTINGS_ATTR_NAME);
-        if settings.is_none() || (settings.is_some() && !settings.as_ref().unwrap().is_config()) {
-            let mut default_settings = ValueRef::dict(None);
-            default_settings
-                .dict_update_key_value(SETTINGS_OUTPUT_KEY, ValueRef::str(SETTINGS_OUTPUT_INLINE));
-            default_settings
-                .dict_update_key_value(SETTINGS_SCHEMA_TYPE_KEY, ValueRef::str(runtime_type));
-            self.dict_update_key_value(SCHEMA_SETTINGS_ATTR_NAME, default_settings);
-        } else {
-            settings
-                .unwrap()
-                .dict_update_key_value(SETTINGS_SCHEMA_TYPE_KEY, ValueRef::str(runtime_type));
+    /// Set the schema instance value with arguments and keyword arguments.
+    pub fn set_schema_args(&mut self, args: &ValueRef, kwargs: &ValueRef) {
+        match &mut *self.rc.borrow_mut() {
+            Value::schema_value(ref mut schema) => {
+                schema.args = args.clone();
+                schema.kwargs = kwargs.clone();
+            }
+            _ => {}
         }
-        if let Some(v) = config.dict_get_value(SCHEMA_SETTINGS_ATTR_NAME) {
-            self.dict_update_key_value(SCHEMA_SETTINGS_ATTR_NAME, v);
+    }
+
+    pub fn get_potential_schema_type(&self) -> Option<String> {
+        match &*self.rc.borrow() {
+            Value::dict_value(ref dict) => dict.potential_schema.clone(),
+            Value::schema_value(ref schema) => schema.config.potential_schema.clone(),
+            _ => None,
+        }
+    }
+
+    pub fn set_potential_schema_type(&mut self, runtime_type: &str) {
+        if !runtime_type.is_empty() {
+            match &mut *self.rc.borrow_mut() {
+                Value::dict_value(ref mut dict) => {
+                    dict.potential_schema = Some(runtime_type.to_string())
+                }
+                Value::schema_value(ref mut schema) => {
+                    schema.config.potential_schema = Some(runtime_type.to_string())
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn has_potential_schema_type(&self) -> bool {
+        match &*self.rc.borrow() {
+            Value::dict_value(ref dict) => dict.potential_schema.is_some(),
+            Value::schema_value(ref schema) => schema.config.potential_schema.is_some(),
+            _ => false,
         }
     }
 
@@ -208,6 +260,9 @@ impl ValueRef {
             let values = &mut schema.config.values;
             let ops = &mut schema.config.ops;
             let insert_indexs = &mut schema.config.insert_indexs;
+            // Reserve config keys for the schema update process. Issue: #785
+            schema.config_keys = value.config_keys.clone();
+            schema.config.potential_schema = value.config.potential_schema.clone();
             for (k, v) in &value.config.values {
                 let op = value
                     .config
@@ -230,18 +285,16 @@ mod test_value_schema {
     const TEST_SCHEMA_NAME: &str = "Data";
 
     fn get_test_schema_value() -> ValueRef {
-        let config = ValueRef::dict(None);
         let mut schema = ValueRef::dict(None).dict_to_schema(
             TEST_SCHEMA_NAME,
             MAIN_PKG_PATH,
             &[],
             &ValueRef::dict(None),
             &ValueRef::dict(None),
+            None,
+            None,
         );
-        schema.schema_default_settings(
-            &config,
-            &schema_runtime_type(TEST_SCHEMA_NAME, MAIN_PKG_PATH),
-        );
+        schema.set_potential_schema_type(&schema_runtime_type(TEST_SCHEMA_NAME, MAIN_PKG_PATH));
         schema
     }
 
@@ -256,6 +309,8 @@ mod test_value_schema {
             &[],
             &ValueRef::dict(None),
             &ValueRef::dict(None),
+            None,
+            None,
         );
         assert!(schema.is_schema());
         let schema = schema.dict_to_schema(
@@ -264,6 +319,8 @@ mod test_value_schema {
             &[],
             &ValueRef::dict(None),
             &ValueRef::dict(None),
+            None,
+            None,
         );
         assert!(schema.is_schema());
         let dict = schema.schema_to_dict();
@@ -272,6 +329,7 @@ mod test_value_schema {
 
     #[test]
     fn test_schema_check_attr_optional() {
+        let mut ctx = Context::new();
         let dict = ValueRef::dict_str(&[("key", "value")]);
         let config_meta = ValueRef::dict(None);
         let optional_mapping = ValueRef::dict_bool(&[("key", true)]);
@@ -281,14 +339,17 @@ mod test_value_schema {
             &[],
             &config_meta,
             &optional_mapping,
+            None,
+            None,
         );
-        schema.schema_check_attr_optional(true);
-        schema.schema_check_attr_optional(false);
+        schema.schema_check_attr_optional(&mut ctx, true);
+        schema.schema_check_attr_optional(&mut ctx, false);
     }
 
     #[test]
     fn test_schema_check_attr_optional_invalid() {
         let err = std::panic::catch_unwind(|| {
+            let mut ctx = Context::new();
             let dict = ValueRef::dict_str(&[("key", "value")]);
             let config_meta = ValueRef::dict(None);
             let optional_mapping = ValueRef::dict_bool(&[("another_key", false)]);
@@ -298,21 +359,12 @@ mod test_value_schema {
                 &[],
                 &config_meta,
                 &optional_mapping,
+                None,
+                None,
             );
-            schema.schema_check_attr_optional(true);
+            schema.schema_check_attr_optional(&mut ctx, true);
         });
         assert!(err.is_err())
-    }
-
-    #[test]
-    fn test_schema_default_settings() {
-        let schema = get_test_schema_value();
-        let schema_settings = schema.get_by_key(SCHEMA_SETTINGS_ATTR_NAME).unwrap();
-        let output_type = schema_settings
-            .get_by_key(SETTINGS_OUTPUT_KEY)
-            .unwrap()
-            .as_str();
-        assert_eq!(output_type, SETTINGS_OUTPUT_INLINE);
     }
 
     #[test]

@@ -1,70 +1,50 @@
-// Copyright 2021 The KCL Authors. All rights reserved.
+//! Copyright The KCL Authors. All rights reserved.
 
-#[allow(non_camel_case_types)]
-type kclvm_value_ref_t = crate::ValueRef;
-use crate::{new_mut_ptr, IndexMap};
+use crate::{new_mut_ptr, IndexMap, PlanOptions};
 use indexmap::IndexSet;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::panic::{RefUnwindSafe, UnwindSafe};
+use std::rc::Rc;
 use std::{
     cell::RefCell,
     cmp::Ordering,
     hash::{Hash, Hasher},
-    rc::Rc,
 };
 
+/*
+ * Single instance name constants Undefined, None, True, False
+ */
 #[allow(non_upper_case_globals)]
 pub const UNDEFINED: Value = Value::undefined;
-
 #[allow(non_upper_case_globals)]
 pub const NONE: Value = Value::none;
-
 #[allow(non_upper_case_globals)]
 pub const TRUE: Value = Value::bool_value(true);
-
 #[allow(non_upper_case_globals)]
 pub const FALSE: Value = Value::bool_value(false);
 
-#[derive(PartialEq, Eq, Clone, Default, Debug)]
-pub struct KclError {
-    pub err_code: i32,
-    pub err_text: String,
-    pub filename: String,
-    pub source_code: String,
-    pub line: i32,
-    pub column: i32,
-}
+/*
+ * Runtime types
+ */
 
-#[allow(non_camel_case_types)]
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, Default)]
 pub enum Type {
-    any_type,
-    bool_type,
-    bool_lit_type(bool),
-    int_type,
-    int_lit_type(i64),
-    float_type,
-    float_lit_type(f64),
-    str_type,
-    str_lit_type(String),
-    list_type(ListType),
-    dict_type(DictType),
-    union_type(UnionType),
-    schema_type(SchemaType),
-    func_type(FuncType),
-}
-
-impl Default for Type {
-    fn default() -> Self {
-        Type::any_type
-    }
-}
-
-impl Type {
-    #[allow(dead_code)]
-    pub fn into_raw(self) -> *mut Self {
-        Box::into_raw(Box::new(self))
-    }
+    #[default]
+    Any,
+    Bool,
+    BoolLit(bool),
+    Int,
+    IntLit(i64),
+    Float,
+    FloatLit(f64),
+    Str,
+    StrLit(String),
+    List(ListType),
+    Dict(DictType),
+    Union(UnionType),
+    Schema(SchemaType),
+    Func(FuncType),
 }
 
 #[derive(PartialEq, Clone, Default, Debug)]
@@ -83,12 +63,17 @@ pub struct UnionType {
     pub elem_types: Vec<Type>,
 }
 
+/// The runtime schema type.
 #[derive(PartialEq, Clone, Default, Debug)]
 pub struct SchemaType {
+    /// The schema runtime type name.
     pub name: String,
-    pub parent_name: String,
-    pub field_names: Vec<String>,
-    pub field_types: Vec<Type>,
+    /// Schema attributes.
+    pub attrs: IndexMap<String, Type>,
+    /// Schema index signature.
+    pub has_index_signature: bool,
+    /// Schema runtime function value.
+    pub func: ValueRef,
 }
 
 #[derive(PartialEq, Clone, Default, Debug)]
@@ -151,8 +136,8 @@ impl PartialOrd for ValueRef {
 impl Hash for ValueRef {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match &*self.rc.borrow() {
-            Value::undefined => panic!("unsupport hash for undefined"),
-            Value::none => panic!("unsupport hash for none"),
+            Value::undefined => 0.hash(state),
+            Value::none => 0.hash(state),
             Value::int_value(v) => (*v as f64).to_bits().hash(state),
             Value::unit_value(_real, raw, unit) => {
                 raw.hash(state);
@@ -199,12 +184,12 @@ impl ValueRef {
         std::ptr::eq(&*self.rc.borrow(), &*x.rc.borrow())
     }
 
-    pub fn into_raw(self) -> *mut Self {
-        new_mut_ptr(self)
+    pub fn into_raw(self, ctx: &mut Context) -> *mut Self {
+        new_mut_ptr(ctx, self)
     }
 
     pub fn from_raw(&self) {
-        //if value is a func,clear captured ValueRef to break circular reference
+        // If value is a func, clear the captured ValueRef to break circular reference.
         if let Value::func_value(val) = &mut *self.rc.borrow_mut() {
             val.closure = ValueRef::none();
         }
@@ -244,6 +229,8 @@ pub struct DictValue {
     pub ops: IndexMap<String, ConfigEntryOperationKind>,
     pub insert_indexs: IndexMap<String, i32>,
     pub attr_map: IndexMap<String, String>,
+    // The runtime dict to schema reflect type string.
+    pub potential_schema: Option<String>,
 }
 
 #[derive(PartialEq, Clone, Default, Debug)]
@@ -256,6 +243,10 @@ pub struct SchemaValue {
     pub config_meta: ValueRef,
     /// This map stores which attributes of the schema are optional and which are required.
     pub optional_mapping: ValueRef,
+    /// Schema instance argument values
+    pub args: ValueRef,
+    /// Schema instance keyword argument values
+    pub kwargs: ValueRef,
 }
 
 #[derive(PartialEq, Eq, Clone, Default, Debug)]
@@ -267,7 +258,6 @@ pub struct DecoratorValue {
 
 #[derive(PartialEq, Eq, Clone, Default, Debug)]
 pub struct FuncValue {
-    // TODO (refactor): SchemaFuncValue
     pub fn_ptr: u64,
     pub check_fn_ptr: u64,
     pub closure: ValueRef,
@@ -276,15 +266,10 @@ pub struct FuncValue {
     pub is_external: bool,
 }
 
-#[derive(PartialEq, Clone, Default, Debug)]
-pub struct ErrorValue {
-    pub errors: Vec<KclError>,
-}
-
 #[derive(PartialEq, Eq, Clone, Default, Debug)]
 pub struct OptionHelp {
     pub name: String,
-    pub typ: String,
+    pub ty: String,
     pub required: bool,
     pub default_value: Option<String>,
     pub help: String,
@@ -293,7 +278,10 @@ pub struct OptionHelp {
 #[allow(non_snake_case)]
 #[derive(PartialEq, Eq, Clone, Default, Debug, Serialize, Deserialize)]
 pub struct PanicInfo {
-    pub __kcl_PanicInfo__: bool, // "__kcl_PanicInfo__"
+    // Used to distinguish whether it is an error
+    // message JSON or a program run result.
+    #[serde(rename = "__kcl_PanicInfo__")]
+    pub __kcl_PanicInfo__: bool,
     pub backtrace: Vec<BacktraceFrame>,
 
     pub rust_file: String,
@@ -307,7 +295,7 @@ pub struct PanicInfo {
     pub kcl_col: i32,
     pub kcl_arg_msg: String,
 
-    // only for schema check
+    // Only for schema check failed error message
     pub kcl_config_meta_file: String,
     pub kcl_config_meta_line: i32,
     pub kcl_config_meta_col: i32,
@@ -321,15 +309,9 @@ pub struct PanicInfo {
 #[derive(PartialEq, Eq, Clone, Default, Debug)]
 pub struct ContextConfig {
     pub debug_mode: bool,
-
     pub strict_range_check: bool,
     pub disable_schema_check: bool,
-
     pub list_option_mode: bool,
-    // Whether to emit none value in the plan process.
-    pub disable_none: bool,
-    // Whether to output empty list in the plan process.
-    pub plan_empty_list: bool,
 }
 
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -348,49 +330,47 @@ impl Default for ContextBuffer {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Debug)]
-pub struct ContextOutput {
-    pub stdout: String,
-    pub stderr: String,
-
-    pub return_value: *mut kclvm_value_ref_t, // *mut kclvm_value_ref_t
-}
-
-impl Default for ContextOutput {
-    fn default() -> Self {
-        Self {
-            stdout: "".to_string(),
-            stderr: "".to_string(),
-            return_value: std::ptr::null_mut(),
-        }
-    }
-}
-
 #[derive(PartialEq, Clone, Default, Debug)]
 pub struct Context {
+    /// Runtime evaluation config.
     pub cfg: ContextConfig,
-    pub output: ContextOutput,
-    pub panic_info: PanicInfo,
 
-    pub main_pkg_path: String,
-    pub main_pkg_files: Vec<String>,
+    /// kcl.mod path or the pwd path
+    pub module_path: String,
+    /// Program work directory
+    pub workdir: String,
     pub backtrace: Vec<BacktraceFrame>,
-
+    /// Imported package path to check the cyclic import process.
     pub imported_pkgpath: HashSet<String>,
+    /// Runtime arguments for the option function.
     pub app_args: HashMap<String, u64>,
-    pub instances: RefCell<HashMap<String, Vec<ValueRef>>>,
-    pub all_types: Vec<Type>,
-    pub all_schemas: RefCell<HashMap<String, ValueRef>>,
+    /// All schema instances
+    pub instances: HashMap<String, Vec<ValueRef>>,
+    /// All schema types
+    pub all_schemas: HashMap<String, SchemaType>,
+    /// Import graph
     pub import_names: IndexMap<String, IndexMap<String, String>>,
-    pub symbol_names: Vec<String>,
-    pub symbol_values: Vec<Value>,
-    pub func_handlers: Vec<FuncHandler>,
 
+    /// All option function calling help messages.
     pub option_helps: Vec<OptionHelp>,
+    /// A buffer to store plugin or hooks function calling results.
     pub buffer: ContextBuffer,
-    /// objects is to store all KCL object pointers.
+    /// Objects is to store all KCL object pointers at runtime.
     pub objects: IndexSet<usize>,
+    /// Log message used to store print results.
+    pub log_message: String,
+    /// Planned JSON result
+    pub json_result: String,
+    /// Planned YAML result
+    pub yaml_result: String,
+    /// Panic information at runtime
+    pub panic_info: PanicInfo,
+    /// Planning options
+    pub plan_opts: PlanOptions,
 }
+
+impl UnwindSafe for Context {}
+impl RefUnwindSafe for Context {}
 
 #[derive(PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
 pub struct BacktraceFrame {
@@ -424,7 +404,7 @@ impl BacktraceFrame {
 impl Context {
     pub fn new() -> Self {
         Context {
-            instances: RefCell::new(HashMap::new()),
+            instances: HashMap::new(),
             panic_info: PanicInfo {
                 kcl_func: "kclvm_main".to_string(),
                 ..Default::default()
@@ -464,17 +444,12 @@ pub enum Kind {
     Func = 18,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, PartialEq, Eq, Debug, Hash, Default)]
 pub enum ConfigEntryOperationKind {
+    #[default]
     Union = 0,
     Override = 1,
     Insert = 2,
-}
-
-impl Default for ConfigEntryOperationKind {
-    fn default() -> Self {
-        ConfigEntryOperationKind::Union
-    }
 }
 
 impl ConfigEntryOperationKind {
