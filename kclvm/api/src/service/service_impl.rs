@@ -6,9 +6,9 @@ use std::string::String;
 use crate::gpyrpc::*;
 
 use anyhow::anyhow;
-use kcl_language_server::rename;
 use kclvm_config::settings::build_settings_pathbuf;
 use kclvm_driver::canonicalize_input_files;
+use kclvm_loader::load_packages_with_cache;
 use kclvm_loader::{load_packages, LoadPackageOptions};
 use kclvm_parser::load_program;
 use kclvm_parser::parse_file;
@@ -20,20 +20,14 @@ use kclvm_query::override_file;
 use kclvm_query::query::get_full_schema_type;
 use kclvm_query::query::CompilationOptions;
 use kclvm_query::GetSchemaOption;
-use kclvm_runner::{build_program, exec_artifact, exec_program};
+use kclvm_sema::core::global_state::GlobalState;
+use kclvm_sema::resolver::scope::KCLScopeCache;
 use kclvm_sema::resolver::Options;
-use kclvm_tools::format::{format, format_source, FormatOptions};
-use kclvm_tools::lint::lint_files;
-use kclvm_tools::testing;
-use kclvm_tools::testing::TestRun;
-use kclvm_tools::vet::validator::validate;
-use kclvm_tools::vet::validator::LoaderKind;
-use kclvm_tools::vet::validator::ValidateOption;
 use tempfile::NamedTempFile;
 
 use super::into::*;
 use super::ty::kcl_schema_ty_to_pb_ty;
-use super::util::{transform_exec_para, transform_str_para};
+use super::util::transform_str_para;
 
 /// Specific implementation of calling service
 #[derive(Debug, Clone, Default)]
@@ -253,6 +247,87 @@ impl KclvmServiceImpl {
         })
     }
 
+    pub fn load_package_with_cache(
+        &self,
+        args: &LoadPackageArgs,
+        module_cache: KCLModuleCache,
+        scope_cache: KCLScopeCache,
+    ) -> anyhow::Result<LoadPackageResult> {
+        let mut package_maps = HashMap::new();
+        let parse_args = args.parse_args.clone().unwrap_or_default();
+        for p in &parse_args.external_pkgs {
+            package_maps.insert(p.pkg_name.to_string(), p.pkg_path.to_string());
+        }
+        let packages = load_packages_with_cache(&LoadPackageOptions {
+            paths: parse_args.paths,
+            load_opts: Some(LoadProgramOptions {
+                k_code_list: parse_args.sources.clone(),
+                package_maps,
+                load_plugins: true,
+                ..Default::default()
+            }),
+            resolve_ast: args.resolve_ast,
+            load_builtin: args.load_builtin,
+        }, module_cache, scope_cache, GlobalState::default())?;
+        if args.with_ast_index {
+            // Thread local options
+            kclvm_ast::ast::set_should_serialize_id(true);
+        }
+        let program_json = serde_json::to_string(&packages.program)?;
+        let mut node_symbol_map = HashMap::new();
+        let mut symbol_node_map = HashMap::new();
+        let mut fully_qualified_name_map = HashMap::new();
+        let mut pkg_scope_map = HashMap::new();
+        let mut symbols = HashMap::new();
+        let mut scopes = HashMap::new();
+        // Build sematic mappings
+        for (k, s) in packages.node_symbol_map {
+            node_symbol_map.insert(k.id.to_string(), s.into_symbol_index());
+        }
+        for (s, k) in packages.symbol_node_map {
+            let symbol_index_string = serde_json::to_string(&s)?;
+            symbol_node_map.insert(symbol_index_string, k.id.to_string());
+        }
+        for (s, k) in packages.fully_qualified_name_map {
+            fully_qualified_name_map.insert(s, k.into_symbol_index());
+        }
+        for (k, s) in packages.pkg_scope_map {
+            pkg_scope_map.insert(k, s.into_scope_index());
+        }
+        for (k, s) in packages.symbols {
+            let symbol_index_string = serde_json::to_string(&k)?;
+            symbols.insert(symbol_index_string, s.into_symbol());
+        }
+        for (k, s) in packages.scopes {
+            let scope_index_string = serde_json::to_string(&k)?;
+            scopes.insert(scope_index_string, s.into_scope());
+        }
+        Ok(LoadPackageResult {
+            program: program_json,
+            paths: packages
+                .paths
+                .iter()
+                .map(|p| p.to_str().unwrap().to_string())
+                .collect(),
+            node_symbol_map,
+            symbol_node_map,
+            fully_qualified_name_map,
+            pkg_scope_map,
+            symbols,
+            scopes,
+            parse_errors: packages
+                .parse_errors
+                .into_iter()
+                .map(|e| e.into_error())
+                .collect(),
+            type_errors: packages
+                .type_errors
+                .into_iter()
+                .map(|e| e.into_error())
+                .collect(),
+        })
+    }
+
     /// Execute KCL file with args. **Note that it is not thread safe.**
     ///
     /// # Examples
@@ -296,17 +371,7 @@ impl KclvmServiceImpl {
     /// assert!(error.to_string().contains("No input KCL files or paths"), "{error}");
     /// ```
     pub fn exec_program(&self, args: &ExecProgramArgs) -> anyhow::Result<ExecProgramResult> {
-        // transform args to json
-        let exec_args = transform_exec_para(&Some(args.clone()), self.plugin_agent)?;
-        let sess = ParseSessionRef::default();
-        let result = exec_program(sess, &exec_args)?;
-
-        Ok(ExecProgramResult {
-            json_result: result.json_result,
-            yaml_result: result.yaml_result,
-            log_message: result.log_message,
-            err_message: result.err_message,
-        })
+        todo!()
     }
 
     /// Build the KCL program to an artifact.
@@ -331,15 +396,7 @@ impl KclvmServiceImpl {
     /// assert!(!artifact.path.is_empty());
     /// ```
     pub fn build_program(&self, args: &BuildProgramArgs) -> anyhow::Result<BuildProgramResult> {
-        let exec_args = transform_exec_para(&args.exec_args, self.plugin_agent)?;
-        let artifact = build_program(
-            ParseSessionRef::default(),
-            &exec_args,
-            transform_str_para(&args.output),
-        )?;
-        Ok(BuildProgramResult {
-            path: artifact.get_path().to_string(),
-        })
+        todo!()
     }
 
     /// Execute the KCL artifact with args. **Note that it is not thread safe.**
@@ -370,14 +427,7 @@ impl KclvmServiceImpl {
     /// assert_eq!(exec_result.yaml_result, "alice:\n  age: 18");
     /// ```
     pub fn exec_artifact(&self, args: &ExecArtifactArgs) -> anyhow::Result<ExecProgramResult> {
-        let exec_args = transform_exec_para(&args.exec_args, self.plugin_agent)?;
-        let result = exec_artifact(&args.path, &exec_args)?;
-        Ok(ExecProgramResult {
-            json_result: result.json_result,
-            yaml_result: result.yaml_result,
-            log_message: result.log_message,
-            err_message: result.err_message,
-        })
+        todo!()
     }
 
     /// Override KCL file with args
@@ -501,26 +551,7 @@ impl KclvmServiceImpl {
         &self,
         args: &GetFullSchemaTypeArgs,
     ) -> anyhow::Result<GetSchemaTypeResult> {
-        let mut type_list = Vec::new();
-        let exec_args = transform_exec_para(&args.exec_args, self.plugin_agent)?;
-        for (_k, schema_ty) in get_full_schema_type(
-            Some(&args.schema_name),
-            CompilationOptions {
-                k_files: exec_args.clone().k_filename_list,
-                loader_opts: Some(exec_args.get_load_program_options()),
-                resolve_opts: Options {
-                    resolve_val: true,
-                    ..Default::default()
-                },
-                get_schema_opts: GetSchemaOption::default(),
-            },
-        )? {
-            type_list.push(kcl_schema_ty_to_pb_ty(&schema_ty));
-        }
-
-        Ok(GetSchemaTypeResult {
-            schema_type_list: type_list,
-        })
+        todo!()
     }
 
     /// Service for getting the schema mapping.
@@ -604,18 +635,7 @@ impl KclvmServiceImpl {
     /// assert_eq!(result.formatted, source.as_bytes().to_vec());
     /// ```
     pub fn format_code(&self, args: &FormatCodeArgs) -> anyhow::Result<FormatCodeResult> {
-        let (formatted, _) = format_source(
-            "",
-            &args.source,
-            &FormatOptions {
-                is_stdout: false,
-                recursively: false,
-                omit_errors: true,
-            },
-        )?;
-        Ok(FormatCodeResult {
-            formatted: formatted.as_bytes().to_vec(),
-        })
+        todo!()
     }
 
     /// Service for formatting kcl file or directory path contains kcl files and
@@ -635,22 +655,7 @@ impl KclvmServiceImpl {
     /// assert!(result.changed_paths.is_empty());
     /// ```
     pub fn format_path(&self, args: &FormatPathArgs) -> anyhow::Result<FormatPathResult> {
-        let path = &args.path;
-        let (path, recursively) = if path.ends_with("...") {
-            let path = &path[0..path.len() - 3];
-            (if path.is_empty() { "." } else { path }, true)
-        } else {
-            (args.path.as_str(), false)
-        };
-        let changed_paths = format(
-            path,
-            &FormatOptions {
-                recursively,
-                is_stdout: false,
-                omit_errors: true,
-            },
-        )?;
-        Ok(FormatPathResult { changed_paths })
+        todo!()
     }
 
     /// Service for KCL Lint API, check a set of files, skips execute,
@@ -670,24 +675,7 @@ impl KclvmServiceImpl {
     /// assert_eq!(result.results, vec!["Module 'math' imported but unused".to_string()]);
     /// ```
     pub fn lint_path(&self, args: &LintPathArgs) -> anyhow::Result<LintPathResult> {
-        let (errs, warnings) = lint_files(
-            &args.paths.iter().map(|p| p.as_str()).collect::<Vec<&str>>(),
-            None,
-        );
-        let mut results = vec![];
-        // Append errors.
-        for err in errs {
-            for msg in err.messages {
-                results.push(msg.message)
-            }
-        }
-        // Append warnings.
-        for warning in warnings {
-            for msg in warning.messages {
-                results.push(msg.message)
-            }
-        }
-        Ok(LintPathResult { results })
+        todo!()
     }
 
     /// Service for validating the data string using the schema code string, when the parameter
@@ -724,34 +712,7 @@ impl KclvmServiceImpl {
     /// assert_eq!(result.success, true);
     /// ```
     pub fn validate_code(&self, args: &ValidateCodeArgs) -> anyhow::Result<ValidateCodeResult> {
-        let mut file = NamedTempFile::new()?;
-        let file_path = if args.datafile.is_empty() {
-            // Write some test data to the first handle.
-            file.write_all(args.data.as_bytes())?;
-            file.path().to_string_lossy().to_string()
-        } else {
-            args.datafile.clone()
-        };
-
-        let (success, err_message) = match validate(ValidateOption::new(
-            transform_str_para(&args.schema),
-            args.attribute_name.clone(),
-            file_path,
-            match args.format.to_lowercase().as_str() {
-                "yaml" | "yml" => LoaderKind::YAML,
-                "json" => LoaderKind::JSON,
-                _ => LoaderKind::JSON,
-            },
-            transform_str_para(&args.file),
-            transform_str_para(&args.code),
-        )) {
-            Ok(success) => (success, "".to_string()),
-            Err(err) => (false, err.to_string()),
-        };
-        Ok(ValidateCodeResult {
-            success,
-            err_message,
-        })
+        todo!()
     }
 
     /// Service for building setting file config from args.
@@ -822,24 +783,7 @@ impl KclvmServiceImpl {
     /// # fs::remove_file(path.clone()).unwrap();
     /// ```
     pub fn rename(&self, args: &RenameArgs) -> anyhow::Result<RenameResult> {
-        let pkg_root = PathBuf::from(args.package_root.clone())
-            .canonicalize()?
-            .display()
-            .to_string();
-        let symbol_path = args.symbol_path.clone();
-        let mut file_paths = vec![];
-        for path in args.file_paths.iter() {
-            file_paths.push(PathBuf::from(path).canonicalize()?.display().to_string());
-        }
-        let new_name = args.new_name.clone();
-        Ok(RenameResult {
-            changed_files: rename::rename_symbol_on_file(
-                &pkg_root,
-                &symbol_path,
-                &file_paths,
-                new_name,
-            )?,
-        })
+        todo!()
     }
 
     /// Service for renaming all the occurrences of the target symbol and rename them. This API won't rewrite files but return the modified code if any code has been changed.
@@ -862,14 +806,7 @@ impl KclvmServiceImpl {
     /// assert_eq!(result.changed_codes.get("/mock/path/main.k").unwrap(), "a2 = 1\nb = a2");
     /// ```
     pub fn rename_code(&self, args: &RenameCodeArgs) -> anyhow::Result<RenameCodeResult> {
-        Ok(RenameCodeResult {
-            changed_codes: rename::rename_symbol_on_code(
-                &args.package_root,
-                &args.symbol_path,
-                args.source_codes.clone(),
-                args.new_name.clone(),
-            )?,
-        })
+        todo!()
     }
 
     /// Service for the testing tool.
@@ -892,31 +829,6 @@ impl KclvmServiceImpl {
     /// assert!(result.info[1].error.is_empty());
     /// ```
     pub fn test(&self, args: &TestArgs) -> anyhow::Result<TestResult> {
-        let mut result = TestResult::default();
-        let exec_args = transform_exec_para(&args.exec_args, self.plugin_agent)?;
-        let opts = testing::TestOptions {
-            exec_args,
-            run_regexp: args.run_regexp.clone(),
-            fail_fast: args.fail_fast,
-        };
-        for pkg in &args.pkg_list {
-            let suites = testing::load_test_suites(pkg, &opts)?;
-            for suite in &suites {
-                let suite_result = suite.run(&opts)?;
-                for (name, info) in &suite_result.info {
-                    result.info.push(TestCaseInfo {
-                        name: name.clone(),
-                        error: info
-                            .error
-                            .as_ref()
-                            .map(|e| e.to_string())
-                            .unwrap_or_default(),
-                        duration: info.duration.as_micros() as u64,
-                        log_message: info.log_message.clone(),
-                    })
-                }
-            }
-        }
-        Ok(result)
+        todo!()
     }
 }

@@ -4,7 +4,7 @@ use kclvm_sema::ty::{DictType, SchemaType, Type};
 use std::collections::HashMap;
 
 /// Convert the kcl sematic type to the kcl protobuf type.
-pub(crate) fn kcl_ty_to_pb_ty(ty: &Type) -> KclType {
+pub fn kcl_ty_to_pb_ty(ty: &Type) -> KclType {
     match &ty.kind {
         kclvm_sema::ty::TypeKind::List(item_ty) => KclType {
             r#type: "list".to_string(),
@@ -31,7 +31,7 @@ pub(crate) fn kcl_ty_to_pb_ty(ty: &Type) -> KclType {
 }
 
 /// Convert the kcl sematic type to the kcl protobuf type.
-pub(crate) fn kcl_schema_ty_to_pb_ty(schema_ty: &SchemaType) -> KclType {
+pub fn kcl_schema_ty_to_pb_ty(schema_ty: &SchemaType) -> KclType {
     KclType {
         r#type: "schema".to_string(),
         schema_name: schema_ty.name.clone(),

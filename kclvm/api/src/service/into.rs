@@ -8,28 +8,28 @@ use kclvm_error::Diagnostic;
 use kclvm_loader::{ScopeInfo, SymbolInfo};
 use kclvm_sema::core::{scope::ScopeRef, symbol::SymbolRef};
 
-pub(crate) trait IntoLoadSettingsFiles {
+pub trait IntoLoadSettingsFiles {
     /// Convert self into the LoadSettingsFiles structure.
     fn into_load_settings_files(self, files: &[String]) -> LoadSettingsFilesResult;
 }
 
-pub(crate) trait IntoError {
+pub trait IntoError {
     fn into_error(self) -> Error;
 }
 
-pub(crate) trait IntoSymbolIndex {
+pub trait IntoSymbolIndex {
     fn into_symbol_index(self) -> SymbolIndex;
 }
 
-pub(crate) trait IntoSymbol {
+pub trait IntoSymbol {
     fn into_symbol(self) -> Symbol;
 }
 
-pub(crate) trait IntoScope {
+pub trait IntoScope {
     fn into_scope(self) -> Scope;
 }
 
-pub(crate) trait IntoScopeIndex {
+pub trait IntoScopeIndex {
     fn into_scope_index(self) -> ScopeIndex;
 }
 
