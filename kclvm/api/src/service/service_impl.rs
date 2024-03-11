@@ -258,17 +258,22 @@ impl KclvmServiceImpl {
         for p in &parse_args.external_pkgs {
             package_maps.insert(p.pkg_name.to_string(), p.pkg_path.to_string());
         }
-        let packages = load_packages_with_cache(&LoadPackageOptions {
-            paths: parse_args.paths,
-            load_opts: Some(LoadProgramOptions {
-                k_code_list: parse_args.sources.clone(),
-                package_maps,
-                load_plugins: true,
-                ..Default::default()
-            }),
-            resolve_ast: args.resolve_ast,
-            load_builtin: args.load_builtin,
-        }, module_cache, scope_cache, GlobalState::default())?;
+        let packages = load_packages_with_cache(
+            &LoadPackageOptions {
+                paths: parse_args.paths,
+                load_opts: Some(LoadProgramOptions {
+                    k_code_list: parse_args.sources.clone(),
+                    package_maps,
+                    load_plugins: true,
+                    ..Default::default()
+                }),
+                resolve_ast: args.resolve_ast,
+                load_builtin: args.load_builtin,
+            },
+            module_cache,
+            scope_cache,
+            GlobalState::default(),
+        )?;
         if args.with_ast_index {
             // Thread local options
             kclvm_ast::ast::set_should_serialize_id(true);
