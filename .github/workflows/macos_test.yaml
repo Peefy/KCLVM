@@ -5,14 +5,14 @@ jobs:
     # Ref: https://github.com/actions/runner-images/tree/main/images/macos
     strategy:
       matrix:
-        os: [macos-11, macos-12]
+        os: [macos-11]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Git checkout
         uses: actions/checkout@v2
         with:
           submodules: "true"
-
+   
       - name: Set up python
         uses: actions/setup-python@v4
         with:
