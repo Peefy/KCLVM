@@ -5,7 +5,7 @@ PROJECT_NAME = KCLVM
 PWD:=$(shell pwd)
 
 VERSION := $(shell cat VERSION)
-BUILD_IMAGE:=kcllang/kcl-builder
+BUILD_IMAGE:=kcllang/kcl-builder:centos7
 
 # export DOCKER_DEFAULT_PLATFORM=linux/amd64
 # or
