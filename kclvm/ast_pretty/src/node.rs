@@ -1,19 +1,16 @@
 use std::collections::HashSet;
 
-use kclvm_error::bug;
 use kclvm_ast::{
     ast::{self, CallExpr},
     token::{DelimToken, TokenKind},
     walker::MutSelfTypedResultWalker,
 };
+use kclvm_error::bug;
 
 use super::{Indentation, Printer};
 
 type ParameterType<'a> = (
-    (
-        &'a ast::NodeRef<ast::Identifier>,
-        &'a Option<ast::NodeRef<String>>,
-    ),
+    (&'a ast::NodeRef<ast::Identifier>, Option<String>),
     &'a Option<ast::NodeRef<ast::Expr>>,
 );
 
@@ -124,14 +121,22 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
         self.stmts(&if_stmt.body);
         self.write_indentation(Indentation::Dedent);
         if !if_stmt.orelse.is_empty() {
-            if let ast::Stmt::If(elif_stmt) = &if_stmt.orelse[0].node {
-                // Nested if statements need to be considered,
-                // so `el` needs to be preceded by the current indentation.
-                self.fill("el");
-                self.walk_if_stmt(elif_stmt);
+            // Check if orelse contains exactly one if statement
+            if if_stmt.orelse.len() == 1 {
+                if let ast::Stmt::If(elif_stmt) = &if_stmt.orelse[0].node {
+                    // Nested if statements need to be considered,
+                    // so `el` needs to be preceded by the current indentation.
+                    self.fill("el");
+                    self.walk_if_stmt(elif_stmt);
+                } else {
+                    self.fill("else:");
+                    self.write_newline_without_fill();
+                    self.write_indentation(Indentation::Indent);
+                    self.stmts(&if_stmt.orelse);
+                    self.write_indentation(Indentation::Dedent);
+                }
             } else {
-                // Nested if statements need to be considered,
-                // so `el` needs to be preceded by the current indentation.
+                // Handle multiple else statements
                 self.fill("else:");
                 self.write_newline_without_fill();
                 self.write_indentation(Indentation::Indent);
@@ -683,7 +688,7 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
         self.stmts(&lambda_expr.body);
 
         self.write_indentation(Indentation::Dedent);
-        self.write_newline();
+        self.fill("");
         self.write_token(TokenKind::CloseDelim(DelimToken::Brace));
     }
 
@@ -699,7 +704,12 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
         let parameter_zip_list: Vec<ParameterType<'_>> = arguments
             .args
             .iter()
-            .zip(arguments.type_annotation_list.iter())
+            .zip(
+                arguments
+                    .ty_list
+                    .iter()
+                    .map(|ty| ty.clone().map(|n| n.node.to_string())),
+            )
             .zip(arguments.defaults.iter())
             .collect();
         interleave!(
@@ -708,7 +718,7 @@ impl<'p, 'ctx> MutSelfTypedResultWalker<'ctx> for Printer<'p> {
                 let ((arg, ty_str), default) = para;
                 self.walk_identifier(&arg.node);
                 if let Some(ty_str) = ty_str {
-                    self.write(&format!(": {}", ty_str.node));
+                    self.write(&format!(": {}", ty_str));
                 }
                 if let Some(default) = default {
                     self.write(" = ");
@@ -844,7 +854,7 @@ impl<'p> Printer<'p> {
             ast::Expr::Identifier(identifier) => {
                 self.hook.pre(self, super::ASTNode::Expr(key));
                 self.write_ast_comments(key);
-                // Judge contains string identifier, e.g., "x-y-z"
+                // Judge contains string or dot identifier, e.g., "x-y-z" and "a.b.c"
                 let names = &identifier.names;
 
                 let re = fancy_regex::Regex::new(IDENTIFIER_REGEX).unwrap();
@@ -853,7 +863,7 @@ impl<'p> Printer<'p> {
                     self.write(
                         &names
                             .iter()
-                            .map(|n| format!("{n:?}"))
+                            .map(|n| format!("{:?}", n))
                             .collect::<Vec<String>>()
                             .join(": {"),
                     );
@@ -900,8 +910,18 @@ impl<'p> Printer<'p> {
     }
 
     pub fn stmts(&mut self, stmts: &[ast::NodeRef<ast::Stmt>]) {
+        let mut prev_stmt: Option<ast::Stmt> = None;
         for stmt in stmts {
+            let import_stmt_alter = match (prev_stmt.as_ref(), stmt.as_ref().node.to_owned()) {
+                (Some(ast::Stmt::Import(_)), ast::Stmt::Import(_)) => false,
+                (Some(ast::Stmt::Import(_)), _) => true,
+                _ => false,
+            };
+            if import_stmt_alter {
+                self.write_newline();
+            }
             self.stmt(stmt);
+            prev_stmt = Some(stmt.node.to_owned());
         }
     }
 }
