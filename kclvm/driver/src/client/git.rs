@@ -24,7 +24,12 @@ pub(crate) fn cmd_clone_git_repo_to(
 
     let output = git_clone_cmd.output()?;
     if !output.status.success() {
-        bail!("Failed to clone Git repository {}", url);
+        bail!(
+            "Failed to clone Git repository {}: stdout: {} stderr: {}",
+            url,
+            String::from_utf8(output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap()
+        );
     }
     if let Some(tag_name) = tag {
         let output = Command::new("git")
@@ -32,7 +37,12 @@ pub(crate) fn cmd_clone_git_repo_to(
             .current_dir(path)
             .output()?;
         if !output.status.success() {
-            bail!("Failed to checkout Git tag");
+            bail!(
+                "Failed to checkout Git tag {}: stdout: {} stderr: {}",
+                tag_name,
+                String::from_utf8(output.stdout).unwrap(),
+                String::from_utf8(output.stderr).unwrap()
+            );
         }
     } else if let Some(commit_hash) = commit {
         let output = Command::new("git")
@@ -40,7 +50,12 @@ pub(crate) fn cmd_clone_git_repo_to(
             .current_dir(path)
             .output()?;
         if !output.status.success() {
-            bail!("Failed to checkout Git commit");
+            bail!(
+                "Failed to checkout Git commit {}: stdout: {} stderr: {}",
+                commit_hash,
+                String::from_utf8(output.stdout).unwrap(),
+                String::from_utf8(output.stderr).unwrap()
+            )
         }
     }
 
