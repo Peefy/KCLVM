@@ -15,12 +15,13 @@ pub(crate) fn cmd_clone_git_repo_to(
     if directory_is_not_empty(path) {
         return Ok(path.to_path_buf());
     }
+    let path = kclvm_utils::path::convert_windows_drive_letter(&path.to_string_lossy().to_string());
     let mut git_clone_cmd = Command::new("git");
     git_clone_cmd.args(["clone", url]);
     if let Some(branch_name) = branch {
         git_clone_cmd.args(["--branch", branch_name]);
     }
-    git_clone_cmd.arg(path);
+    git_clone_cmd.arg(&path);
 
     let output = git_clone_cmd.output()?;
     if !output.status.success() {
@@ -34,7 +35,7 @@ pub(crate) fn cmd_clone_git_repo_to(
     if let Some(tag_name) = tag {
         let output = Command::new("git")
             .args(["checkout", tag_name])
-            .current_dir(path)
+            .current_dir(&path)
             .output()?;
         if !output.status.success() {
             bail!(
@@ -47,7 +48,7 @@ pub(crate) fn cmd_clone_git_repo_to(
     } else if let Some(commit_hash) = commit {
         let output = Command::new("git")
             .args(["checkout", commit_hash])
-            .current_dir(path)
+            .current_dir(&path)
             .output()?;
         if !output.status.success() {
             bail!(
@@ -59,5 +60,5 @@ pub(crate) fn cmd_clone_git_repo_to(
         }
     }
 
-    Ok(path.to_path_buf())
+    Ok(path.into())
 }
