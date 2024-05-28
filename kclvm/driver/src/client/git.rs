@@ -4,6 +4,7 @@ use std::process::Command;
 
 use crate::client::fs::directory_is_not_empty;
 use anyhow::Result;
+use kclvm_utils::path::PathPrefix;
 
 pub(crate) fn cmd_clone_git_repo_to(
     url: &str,
@@ -15,7 +16,7 @@ pub(crate) fn cmd_clone_git_repo_to(
     if directory_is_not_empty(path) {
         return Ok(path.to_path_buf());
     }
-    let path = kclvm_utils::path::convert_windows_drive_letter(&path.to_string_lossy().to_string());
+    let path = path.adjust_canonicalization();
     let mut git_clone_cmd = Command::new("git");
     git_clone_cmd.args(["clone", url]);
     if let Some(branch_name) = branch {
