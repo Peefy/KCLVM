@@ -22,7 +22,7 @@ jobs:
 
       - name: Pull custom centos7 Docker image
         run: |
-          docker pull --platform kcllang/kcl-builder:centos7
+          docker pull kcllang/kcl-builder:centos7
 
       - name: Release
         run: |
