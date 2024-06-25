@@ -29,9 +29,7 @@ jobs:
           docker run --rm \
             -v ${{ github.workspace }}:/workspace -w /workspace \
             kcllang/kcl-builder:centos7 \
-            source ~/.bash_profile && 
-            export PATH=$PATH:/opt/build/bin/ && sed -i 's/llvm12/llvm7/g' kclvm/compiler/Cargo.toml &&
-            make && make release
+            /bin/bash -c "source ~/.bash_profile && export PATH=$PATH:/opt/build/bin/ && sed -i 's/llvm12/llvm7/g' kclvm/compiler/Cargo.toml && make && make release"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v3
