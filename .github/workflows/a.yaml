@@ -10,7 +10,7 @@ jobs:
     name: validate with KCL
     strategy:
       matrix:
-        os: [macos-12, macos-13, macos-latest, v]
+        os: [macos-12, macos-13, macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4
