@@ -1,9 +1,6 @@
 name: validate schemas with KCL
 
-on:
-  pull_request:
-    paths:
-      - 'directory/with/yaml/files/config**'
+on: ["push", "pull_request"]
 
 env:
   KCL_VERSION: 0.9.0
@@ -11,7 +8,10 @@ env:
 jobs:
   validate:
     name: validate with KCL
-    runs-on: [ubuntu-latest, macos-latest]
+    strategy:
+      matrix:
+        os: [macos-12, macos-13, macos-latest, v]
+    runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v4
       name: checkout code
