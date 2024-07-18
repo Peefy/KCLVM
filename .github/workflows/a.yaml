@@ -1,0 +1,32 @@
+name: validate schemas with KCL
+
+on:
+  pull_request:
+    paths:
+      - 'directory/with/yaml/files/config**'
+
+env:
+  KCL_VERSION: 0.9.0
+
+jobs:
+  validate:
+    name: validate with KCL
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      name: checkout code
+      with:
+        fetch-depth: 2
+    - name: install kcl
+      run: wget -q https://kcl-lang.io/script/install-cli.sh -O - | /bin/bash -s $KCL_VERSION
+    - name: show kcl version
+      shell: bash -ieo pipefail {0}
+      run: kcl version
+    - name: validate modified files
+      shell: bash -ieo pipefail {0}
+      run: |
+        iterations=10
+        for ((i=1; i<=$iterations; i++)); do
+          echo "Executing kcl vet for the $i-th time..."
+          kcl vet a.yaml schema.k --format yaml
+        done
