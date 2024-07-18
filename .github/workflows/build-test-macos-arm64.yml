@@ -20,5 +20,5 @@ jobs:
         run: brew install llvm@18
         shell: bash
       - name: Grammar test
-        run: export PATH=$PATH:$PWD/../_build/dist/Darwin/kclvm/bin:/opt/homebrew/opt/llvm@18/bin/ && mlir-translate mlir-translate grid.mlir  --mlir-to-llvmir
+        run: export PATH=$PATH:$PWD/../_build/dist/Darwin/kclvm/bin:/opt/homebrew/opt/llvm@18/bin/ && mlir-translate grid.mlir --mlir-to-llvmir
         shell: bash
